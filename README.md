@@ -223,11 +223,48 @@ const counterAutomat = new Automat(
 | `automat.state` | Direct getter for current state snapshot (ideal for `constructor`) |
 | `automat.getState()` | Returns current state snapshot |
 | `automat.setState(partial)` | Merges partial into state and notifies all subscribers |
-| `automat.subscribe(target, selector?)` | Subscribes either a component instance (`this`) or a callback `(state) => ...`. Returns unsub function. |
+| `automat.subscribe(target, selector?)` | Subscribes a component (`this`) or callback. Supports key string, key array, or selector function. Avoids unnecessary re-renders via shallow equality check. |
+| `automat.select(selector)` | Returns a sliced view `{ readonly state, subscribe(target) }` for direct constructor reads and scoped subscriptions. |
 | `automat.unsubscribe(target)` | Unsubscribes a component instance or callback function |
 | `automat.subscribeTo(upstream, transform)` | Notification cascade: derives state from an upstream automat |
 | `automat.actions` | Named action callbacks passed to constructor — call directly from `onClick` |
 | `automat.dispose()` | Tears down all upstream subscriptions and clears all subscribers |
+
+---
+
+## Subscribing to Part of the State (Slice Subscriptions)
+
+When an automat has multiple fields (e.g. `{ count, filter, theme, user }`), subscribing without a selector will cause any state change to trigger `this.setState()` on the subscriber.
+
+When a component only cares about a subset of the automat's state, subscribe with a **slice selector**. `Automat` performs an internal shallow equality check (`shallowEqual(lastSlice, nextSlice)`), ensuring updates to other unrelated fields **never trigger `setState` or re-renders**:
+
+### 1. Single Key String
+```jsx
+// Subscribes only to changes in 'count'. Unrelated fields will NOT trigger setState:
+this.unsubscribe = myAutomat.subscribe(this, 'count');
+```
+
+### 2. Array of Keys
+```jsx
+// Subscribes only to 'count' and 'step':
+this.unsubscribe = myAutomat.subscribe(this, ['count', 'step']);
+```
+
+### 3. Custom Selector Function
+```jsx
+// Computes a derived slice; returning null/undefined skips updates:
+this.unsubscribe = myAutomat.subscribe(this, (state) => ({
+  count: state.count,
+  isEven: state.count % 2 === 0,
+}));
+```
+
+### 4. Automat Slicing with `.select()`
+```jsx
+const countSlice = myAutomat.select('count');
+this.state = countSlice.state;          // { count: 0 }
+this.unsubscribe = countSlice.subscribe(this);
+```
 
 ---
 

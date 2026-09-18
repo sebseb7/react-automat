@@ -30,6 +30,26 @@
  * }
  * ```
  */
+/**
+ * Performs a shallow equality check between two values or objects.
+ * Used by Automat subscribers to avoid unnecessary setState calls when
+ * a subscribed slice of state has not changed.
+ */
+function shallowEqual(a, b) {
+  if (Object.is(a, b)) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (let i = 0; i < keysA.length; i++) {
+    const key = keysA[i];
+    if (!Object.prototype.hasOwnProperty.call(b, key) || !Object.is(a[key], b[key])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export class Automat {
   /** @type {object} */
   #state;
@@ -75,47 +95,127 @@ export class Automat {
    */
   setState(partial) {
     this.#state = { ...this.#state, ...partial };
-    this.#notify();
+    this.#notify(partial);
     return this.#state;
   }
 
   /**
-   * Subscriber handling for React lifecycle management or listener callbacks.
+   * Subscribes a React PureComponent instance or a listener callback.
    *
-   * Supports:
-   * 1. A React component instance (has `.setState`):
-   *    `this.unsubscribe = automat.subscribe(this);`
-   * 2. A React component instance with an optional selector:
-   *    `this.unsubscribe = automat.subscribe(this, state => ({ count: state.count }));`
-   * 3. A listener function:
-   *    `this.unsubscribe = automat.subscribe((state) => { ... });`
+   * Partial / Slice Subscriptions:
+   * By default, subscribing to an automat triggers updates when any state changes.
+   * Passing a `selector` allows subscribing to only a slice of state.
+   * Changes to unrelated state fields will NOT trigger setState or re-renders.
    *
-   * @param {object|function} target    React component instance or callback function.
-   * @param {function}        [selector] Optional selector function mapping state.
-   * @returns {function}                 Unsubscribe function for componentWillUnmount.
+   * Selector forms:
+   * 1. Single property key (string):
+   *    `automat.subscribe(this, 'count')`
+   * 2. Multiple property keys (array of strings):
+   *    `automat.subscribe(this, ['count', 'step'])`
+   * 3. Selector function:
+   *    `automat.subscribe(this, state => ({ count: state.count }))`
+   *    (Return null/undefined to conditionally skip updates)
+   * 4. Full subscription (omitted):
+   *    `automat.subscribe(this)`
+   *
+   * @param {object|function} target      React component (`this`) or callback function.
+   * @param {string|string[]|function} [selector] Property key, key array, or selector function.
+   * @returns {function}                  Unsubscribe function for componentWillUnmount.
    */
   subscribe(target, selector) {
-    let notifyFn;
+    const isComponent = target && typeof target.setState === 'function';
+    const isFunction = typeof target === 'function';
 
-    if (typeof target === 'function') {
-      notifyFn = target;
-    } else if (target && typeof target.setState === 'function') {
-      notifyFn = (state) => {
-        const next = typeof selector === 'function' ? selector(state) : state;
-        if (next != null) {
-          target.setState(next);
-        }
-      };
-    } else {
+    if (!isComponent && !isFunction) {
       throw new TypeError(
         'Automat.subscribe expects a callback function or a React component instance with a setState method.'
       );
     }
 
+    let getSlice;
+    if (typeof selector === 'string') {
+      getSlice = isComponent
+        ? (state) => ({ [selector]: state[selector] })
+        : (state) => state[selector];
+    } else if (Array.isArray(selector)) {
+      getSlice = (state) => {
+        const slice = {};
+        for (let i = 0; i < selector.length; i++) {
+          const key = selector[i];
+          slice[key] = state[key];
+        }
+        return slice;
+      };
+    } else if (typeof selector === 'function') {
+      getSlice = selector;
+    }
+
+    let lastSlice = getSlice ? getSlice(this.#state) : undefined;
+
+    const notifyFn = (state, partial) => {
+      if (getSlice) {
+        const nextSlice = getSlice(state);
+        if (nextSlice == null) return;
+        if (shallowEqual(lastSlice, nextSlice)) return;
+        lastSlice = nextSlice;
+
+        if (isComponent) {
+          if (typeof nextSlice !== 'object') {
+            throw new TypeError(
+              'Automat: selector for a React component must return a state object, e.g. state => ({ count: state.count }).'
+            );
+          }
+          target.setState(nextSlice);
+        } else {
+          target(nextSlice);
+        }
+      } else {
+        if (isComponent) {
+          target.setState(partial ?? state);
+        } else {
+          target(state);
+        }
+      }
+    };
+
     this.#subscribers.set(target, notifyFn);
 
     return () => {
       this.unsubscribe(target);
+    };
+  }
+
+  /**
+   * Slices this automat to a subset of state for reading and subscription.
+   *
+   * @param {string|string[]|function} selector
+   * @returns {{ readonly state: any, subscribe(target: object|function): function }}
+   */
+  select(selector) {
+    let getSlice;
+    if (typeof selector === 'string') {
+      getSlice = (state) => ({ [selector]: state[selector] });
+    } else if (Array.isArray(selector)) {
+      getSlice = (state) => {
+        const slice = {};
+        for (let i = 0; i < selector.length; i++) {
+          const key = selector[i];
+          slice[key] = state[key];
+        }
+        return slice;
+      };
+    } else if (typeof selector === 'function') {
+      getSlice = selector;
+    } else {
+      getSlice = (state) => state;
+    }
+
+    const self = this;
+    return {
+      get state() {
+        return getSlice(self.state);
+      },
+      subscribe: (target) => self.subscribe(target, selector),
     };
   }
 
@@ -171,9 +271,9 @@ export class Automat {
   }
 
   /** @private */
-  #notify() {
+  #notify(partial) {
     for (const notifyFn of this.#subscribers.values()) {
-      notifyFn(this.#state);
+      notifyFn(this.#state, partial);
     }
   }
 }

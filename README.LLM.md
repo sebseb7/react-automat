@@ -9,11 +9,12 @@ This document is optimized for LLMs and AI coding assistants implementing or con
 `automat` is a lightweight (~1.1 kB minified, zero-dependency) observable state container designed specifically for React `PureComponent`.
 
 ### Key Invariants
-1. **Instance Lifetime (Module Singleton or Dynamic Map Registry)**: An `Automat` instance lives outside the React render tree. While commonly instantiated as module-level singletons, instances can also be stored dynamically in a `Map` (e.g. `window.automatRegistry = new Map()` or an in-memory entity cache) keyed by ID or index. State persists in memory across component mounts, unmounts, and subscription transfers.
+1. **Instance Lifetime (Module Singleton or Dynamic Map Registry)**: An `Automat` instance lives outside the React render tree. While commonly instantiated as module-level singletons, instances can also be stored dynamically in a `Map` (e.g. `window.automats = new Map()` or an in-memory entity cache) keyed by ID or index. State persists in memory across component mounts, unmounts, and subscription transfers.
 2. **Direct Constructor Read**: Components read `automat.state` directly in their `constructor(props)`. State is never stale upon mounting.
 3. **Lifecycle Subscription**: Components register with `automat.subscribe(this)` in `componentDidMount()` and call `this.unsubscribe()` in `componentWillUnmount()`.
 4. **Hybrid State by Default**: When `automat.setState()` notifies a component, it calls `component.setState(partial)`. React's class component `setState` performs a shallow merge, preserving any component-local state fields.
-5. **No Wrappers or Hooks**: No HOCs, no context providers, no hooks, no `connect()`.
+5. **Fine-Grained Slice Subscriptions**: By default, `automat.subscribe(this)` notifies on any state change. When a subscriber only cares about a subset of state, passing a selector (`'key'`, `['keyA', 'keyB']`, or `(state) => ({ ... })`) enables internal shallow equality checking (`shallowEqual`). Updates to unrelated state fields will NOT trigger `setState` or re-renders.
+6. **No Wrappers or Hooks**: No HOCs, no context providers, no hooks, no `connect()`.
 
 ---
 
@@ -41,7 +42,8 @@ new Automat<T extends object, A extends Record<string, Function>>(
 | `getState()` | `getState(): T` | Method returning current state snapshot. |
 | `actions` | `get actions(): A` | Getter returning the actions object passed into the constructor. |
 | `setState()` | `setState(partial: Partial<T>): T` | Shallow-merges `partial` into current state and synchronously notifies all subscribers. Returns new state. |
-| `subscribe()` | `subscribe(target: PureComponent \| ((state: T) => void), selector?: (state: T) => object \| null): () => void` | Subscribes either a React component instance (`this`) or a callback function. Returns an `unsubscribe` function. |
+| `subscribe()` | `subscribe(target: PureComponent \| ((state: T) => void), selector?: string \| string[] \| ((state: T) => object \| null)): () => void` | Subscribes either a React component instance (`this`) or a callback function. When `selector` is provided, performs shallow equality checking to ensure updates to unrelated state fields never trigger `setState` or re-renders. |
+| `select()` | `select(selector: string \| string[] \| ((state: T) => any)): { readonly state: any, subscribe(target): () => void }` | Slices an automat to a specific subset of state for direct constructor reads and scoped subscriptions. |
 | `unsubscribe()` | `unsubscribe(target: PureComponent \| Function): void` | Manually unregisters a subscriber. |
 | `subscribeTo()` | `subscribeTo<U>(upstream: Automat<U>, transform: (upstreamState: U, myState: T) => Partial<T> \| null): this` | Reactive pipeline: Derives state from an upstream automat. Returns `this` for chaining. |
 | `dispose()` | `dispose(): void` | Unsubscribes all upstream listeners and clears all subscribers. |
@@ -125,26 +127,61 @@ export class CounterController extends PureComponent {
 
 ---
 
-### Pattern C: Passive Reader Component with State Selector
+### Pattern C: Partial & Slice Subscriptions (Subscribing to Part of the State)
 
-Use a selector function when a component only cares about a subset of the automat's state:
+When an automat manages multiple state fields (e.g. `{ count, filter, theme, user }`), subscribing with `automat.subscribe(this)` causes any state change in the automat to notify the component. When a component only cares about a subset of the automat's state, subscribe using a **slice selector**.
+
+`Automat` performs an internal shallow equality check (`shallowEqual(lastSlice, nextSlice)`). Updates to other, unrelated fields in the automat **will NOT trigger `setState` or re-renders** for that subscriber.
+
+#### Supported Selector Forms:
+
+1. **Single key string** (most concise):
+```jsx
+// Subscribes ONLY to 'count'. Injects { count } into component setState.
+this.unsubscribe = myAutomat.subscribe(this, 'count');
+```
+
+2. **Array of keys**:
+```jsx
+// Subscribes ONLY to 'count' and 'step'. Injects { count, step } into component setState.
+this.unsubscribe = myAutomat.subscribe(this, ['count', 'step']);
+```
+
+3. **Selector function**:
+```jsx
+// Computes a custom slice. Returning null or undefined skips updates.
+this.unsubscribe = myAutomat.subscribe(this, (state) => ({
+  count: state.count,
+  isEven: state.count % 2 === 0,
+}));
+```
+
+4. **Scoping via `.select()`**:
+```jsx
+// Slicing helper for both constructor reading and subscription:
+const countSlice = myAutomat.select('count');
+this.state = countSlice.state; // { count: 0 }
+this.unsubscribe = countSlice.subscribe(this);
+```
+
+#### Example: Passive Reader Subscribing Only to a Slice
 
 ```jsx
 // src/components/CountDisplay.jsx
 import { PureComponent } from 'react';
-import { counterAutomat } from '../automats/counterAutomat.js';
+import { appAutomat } from '../automats/appAutomat.js';
 
 export class CountDisplay extends PureComponent {
   constructor(props) {
     super(props);
-    this.state = { count: counterAutomat.state.count };
+    // Initialize with only the slice needed:
+    this.state = { count: appAutomat.state.count };
   }
 
   componentDidMount() {
-    // Selector maps state to target object. Returning null skips setState.
-    this.unsubscribe = counterAutomat.subscribe(this, (state) => ({
-      count: state.count,
-    }));
+    // 💡 Partial subscription: only re-renders when `count` changes.
+    // Mutations to appAutomat.theme, .user, etc. will NOT trigger setState!
+    this.unsubscribe = appAutomat.subscribe(this, 'count');
   }
 
   componentWillUnmount() {
@@ -359,12 +396,14 @@ export class DynamicSlotObserver extends PureComponent {
 - **DO** create `Automat` instances in module scope or outside React components.
 - **DO** initialize component state synchronously in `constructor(props)` using `this.state = myAutomat.state;` or `{ ...myAutomat.state, localField: 'val' }`.
 - **DO** register subscriptions in `componentDidMount()` via `this.unsubscribe = myAutomat.subscribe(this);`.
+- **DO** use slice selectors (`myAutomat.subscribe(this, 'fieldName')` or `['fieldA', 'fieldB']`) when a component only needs part of the state, preventing unnecessary `setState` triggers and re-renders when unrelated fields change.
 - **DO** clean up subscriptions in `componentWillUnmount()` via `this.unsubscribe();`.
 - **DO** invoke actions directly from event handlers (e.g. `onClick={() => myAutomat.actions.doSomething()}`).
 - **DO** return `null` in `subscribeTo` transforms when an update should be filtered out.
 
 ### ❌ DON'Ts
 - **DON'T** instantiate `new Automat()` inside a React component's `render()`, `constructor()`, or lifecycle method.
+- **DON'T** subscribe with bare `myAutomat.subscribe(this)` if the component only depends on a specific subset of fields in a multi-field automat; use a slice selector instead.
 - **DON'T** mutate state directly (e.g. `myAutomat.state.count = 5` is forbidden). Always call `myAutomat.setState({ count: 5 })` or an action.
 - **DON'T** wrap components in React Context providers, HOCs, or `connect()`.
 - **DON'T** use React Hooks (`useState`, `useEffect`) when targeting the `automat` class component architecture. Use `PureComponent`.
