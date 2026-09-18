@@ -94,7 +94,7 @@ class DynamicAutomatSubscriber extends PureComponent {
         <div className="card-header">
           <span className="card-icon">⚡</span>
           <h3>Dynamic Slot Automat (Resubscribed by Index)</h3>
-          <span className="badge badge-cascade">window.automats.get({currentIndex})</span>
+          <span className="badge badge-cascade">Automat.get('slot_{currentIndex}') (window)</span>
         </div>
 
         <div className="card-body">

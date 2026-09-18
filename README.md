@@ -1,39 +1,16 @@
-# ⚙ automat
+# Automat
 
-> Observable state management for React `PureComponent`.  
-> State lives **independently of component lifecycle** — mounts and unmounts freely without losing state.  
-> **No wrappers, no HOCs, no `connect()` — purely direct access and lifecycle subscriber handling.**
-
-```bash
-npm run dev
-```
+Observable state management for React `PureComponent` — state independent of component lifecycle. Lightweight (~1.1 kB minified) and zero-dependency.
 
 ---
 
-## Motivation
+## Quick Start
 
-Redux separates state from UI, but brings boilerplate and pushes toward hooks. Higher-order wrappers and `connect()` introduce indirection, wrapper nesting, and tricky state hydration.
-
-`automat` provides a clean, direct approach centered on standard `React.PureComponent`:
-
-1. **Instantiate first**: The Automat instance is created outside React's render tree.
-2. **Direct constructor access**: Components initialize directly from `automat.state` (or `getState()`) — never stale, even after transitions prior to mounting.
-3. **Lifecycle subscriber handling**: In `componentDidMount`, register the component with `automat.subscribe(this)`. In `componentWillUnmount`, call `this.unsubscribe()` or `automat.unsubscribe(this)`.
-4. **Direct event wiring**: Call `automat.actions.actionName()` or `automat.setState(...)` directly in `onClick` handlers. No dispatchers, actions creators, or prop drilling.
-5. **Render minimization**: Standard `PureComponent` shallow state comparison prevents unnecessary re-renders automatically without extra layers.
-
----
-
-## Direct PureComponent Pattern (Wired Click Example)
-
-Here is a complete, two-component example showing how clicks trigger actions and synchronize independent components:
-
-```jsx
-import { PureComponent } from 'react';
+```js
+// counterAutomat.js
 import { Automat } from 'automat';
 
-// 1. Instantiate the automat outside React:
-const counterAutomat = new Automat(
+export const counterAutomat = new Automat(
   { count: 0 },
   {
     increment(step = 1) {
@@ -42,152 +19,39 @@ const counterAutomat = new Automat(
     decrement(step = 1) {
       counterAutomat.setState({ count: counterAutomat.state.count - step });
     },
-    reset() {
-      counterAutomat.setState({ count: 0 });
-    },
   }
 );
+```
 
-// 2. Controller component: buttons trigger actions, hybrid state tracks local clicks
-class CounterButton extends PureComponent {
+```jsx
+// Counter.jsx
+import { PureComponent } from 'react';
+import { counterAutomat } from './counterAutomat.js';
+
+export class Counter extends PureComponent {
   constructor(props) {
     super(props);
-    // 💡 HYBRID STATE:
-    // Shared count comes from the automat; step & localClicks are local
-    this.state = {
-      count: counterAutomat.state.count, // ← from automat
-      step: 1,                           // ← component-local state
-      localClicks: 0,                    // ← component-local state
-    };
-  }
-
-  componentDidMount() {
-    // Subscribe component to automat updates
-    this.unsubscribe = counterAutomat.subscribe(this);
-  }
-
-  componentWillUnmount() {
-    this.unsubscribe();
-  }
-
-  // 💡 CLICK HANDLERS: update local state AND trigger automat actions
-  handleIncrement = () => {
-    const { step, localClicks } = this.state;
-    this.setState({ localClicks: localClicks + 1 });
-    counterAutomat.actions.increment(step); // ← Triggers automat!
-  };
-
-  handleDecrement = () => {
-    const { step, localClicks } = this.state;
-    this.setState({ localClicks: localClicks + 1 });
-    counterAutomat.actions.decrement(step); // ← Triggers automat!
-  };
-
-  handleReset = () => {
-    this.setState({ localClicks: 0 });
-    counterAutomat.actions.reset();         // ← Triggers automat!
-  };
-
-  render() {
-    const { count, step, localClicks } = this.state;
-    return (
-      <div className="card">
-        <p>Count: {count} · Local Clicks: {localClicks}</p>
-
-        {/* 💡 WIRED ONCLICK: calls handlers directly */}
-        <button onClick={this.handleDecrement}>−{step}</button>
-        <button onClick={this.handleIncrement}>+{step}</button>
-        <button onClick={this.handleReset}>Reset</button>
-      </div>
-    );
-  }
-}
-
-// 3. Independent Display component: reads same automat with ZERO props passed
-class CounterDisplay extends PureComponent {
-  constructor(props) {
-    super(props);
-    // Reads directly from automat in constructor:
+    // 1. Read state directly in constructor (never stale)
     this.state = counterAutomat.state;
   }
 
   componentDidMount() {
-    // Automatically re-renders when CounterButton triggers an increment/decrement
+    // 2. Subscribe component to updates
     this.unsubscribe = counterAutomat.subscribe(this);
   }
 
   componentWillUnmount() {
+    // 3. Clean up on unmount
     this.unsubscribe();
   }
 
   render() {
-    return <h1>Display: {this.state.count}</h1>;
-  }
-}
-```
-
----
-
-### Why Hybrid State works seamlessly with React PureComponent
-
-When `counterAutomat.setState({ count: 42 })` notifies the subscriber:
-1. It calls `this.setState({ count: 42 })` on the component instance.
-2. React's class component `setState` performs a **shallow merge** into `this.state`.
-3. Local fields (`step`, `localClicks`, `inputValue`) remain untouched.
-4. `PureComponent`'s shallow comparison ensures renders happen only when values change.
-
-```jsx
-class SearchBox extends PureComponent {
-  constructor(props) {
-    super(props);
-    this.state = {
-      ...searchAutomat.state, // results, loading, etc.
-      inputValue: '',         // component-local input
-    };
-  }
-
-  componentDidMount() {
-    this.unsubscribe = searchAutomat.subscribe(this);
-  }
-
-  componentWillUnmount() {
-    this.unsubscribe();
-  }
-
-  handleInput = (e) => {
-    this.setState({ inputValue: e.target.value });
-  };
-
-  // 💡 Wired form submission / click:
-  handleSubmit = (e) => {
-    e.preventDefault();
-    const query = this.state.inputValue.trim();
-    if (query) {
-      searchAutomat.actions.search(query); // ← Triggers async search action
-    }
-  };
-
-  render() {
-    const { loading, results, inputValue } = this.state;
     return (
-      <form onSubmit={this.handleSubmit}>
-        <input
-          type="text"
-          value={inputValue}
-          onChange={this.handleInput}
-          placeholder="Search items…"
-        />
-        {/* 💡 Click triggers handleSubmit → searchAutomat.actions.search() */}
-        <button type="submit" disabled={loading}>
-          {loading ? 'Searching…' : 'Search'}
-        </button>
-
-        <ul>
-          {results?.map((item) => (
-            <li key={item.id}>{item.title}</li>
-          ))}
-        </ul>
-      </form>
+      <div>
+        <span>{this.state.count}</span>
+        <button onClick={() => counterAutomat.actions.increment()}>+1</button>
+        <button onClick={() => counterAutomat.actions.decrement()}>-1</button>
+      </div>
     );
   }
 }
@@ -195,296 +59,304 @@ class SearchBox extends PureComponent {
 
 ---
 
-## Core API
+## Core Invariants
 
-### `new Automat(initialState, actions?)`
-
-```js
-import { Automat } from './src/lib/index.js';
-
-const counterAutomat = new Automat(
-  { count: 0 },
-  {
-    increment(step = 1) {
-      counterAutomat.setState({ count: counterAutomat.state.count + step });
-    },
-    decrement(step = 1) {
-      counterAutomat.setState({ count: counterAutomat.state.count - step });
-    },
-    reset() {
-      counterAutomat.setState({ count: 0 });
-    },
-  }
-);
-```
-
-| Member | Description |
-|---|---|
-| `automat.state` | Direct getter for current state snapshot (ideal for `constructor`) |
-| `automat.getState()` | Returns current state snapshot |
-| `automat.setState(partial)` | Merges partial into state and notifies all subscribers |
-| `automat.subscribe(target, selector?)` | Subscribes a component (`this`) or callback. Supports key string, key array, or selector function. Avoids unnecessary re-renders via shallow equality check. |
-| `automat.select(selector)` | Returns a sliced view `{ readonly state, subscribe(target) }` for direct constructor reads and scoped subscriptions. |
-| `automat.unsubscribe(target)` | Unsubscribes a component instance or callback function |
-| `automat.subscribeTo(upstream, transform)` | Notification cascade: derives state from an upstream automat |
-| `automat.actions` | Named action callbacks passed to constructor — call directly from `onClick` |
-| `automat.dispose()` | Tears down all upstream subscriptions and clears all subscribers |
+1. **Lifecycle-Independent**: `Automat` instances live outside the React tree (typically in module scope), persisting state across component mounts and unmounts.
+2. **Synchronous Constructor Reads**: Components initialize with `this.state = myAutomat.state;` directly in `constructor(props)`.
+3. **Automatic Shallow Merges**: When subscribed with `subscribe(this)`, `automat.setState(partial)` calls `component.setState(partial)`, preserving any component-local state.
+4. **Fine-Grained Selectors**: Passing a selector to `subscribe(this, selector)` runs shallow equality checks; updates to unrelated fields skip `setState` and avoid re-renders.
+5. **Zero Wrappers**: No hooks, HOCs, Context Providers, or `connect()`.
+6. **Optional Persistence**: Automats can specify a `name` and persist in the `window` object (`persist: false`) for session memory across unmounts/HMR, or in `IndexedDB` (`persist: true`) to survive full page reloads.
 
 ---
 
-## Subscribing to Part of the State (Slice Subscriptions)
+## API Reference
 
-When an automat has multiple fields (e.g. `{ count, filter, theme, user }`), subscribing without a selector will cause any state change to trigger `this.setState()` on the subscriber.
+### `new Automat(initialState, actions?, options?)`
 
-When a component only cares about a subset of the automat's state, subscribe with a **slice selector**. `Automat` performs an internal shallow equality check (`shallowEqual(lastSlice, nextSlice)`), ensuring updates to other unrelated fields **never trigger `setState` or re-renders**:
+Creates an observable state container with optional persistence.
 
-### 1. Single Key String
-```jsx
-// Subscribes only to changes in 'count'. Unrelated fields will NOT trigger setState:
-this.unsubscribe = myAutomat.subscribe(this, 'count');
+- `initialState` *(object)*: Initial state snapshot (shallow copied).
+- `actions` *(object, optional)*: Action methods stored on `automat.actions`.
+- `options` *(object, optional)*:
+  - `name` *(string)*: Unique identifier used for persistence and `Automat.get(name)` registry lookup.
+  - `persist` *(boolean)*: Persistence strategy when `name` is provided:
+    - `false` (default): Persists in the `window` object (session memory, survives component unmounts and HMR).
+    - `true`: Persists in `IndexedDB` (survives page reloads and browser restarts).
+
+```js
+// Window-persisted (session memory)
+const sessionStore = new Automat(
+  { filter: 'all' },
+  { setFilter(filter) { sessionStore.setState({ filter }); } },
+  { name: 'filter', persist: false }
+);
+
+// IndexedDB-persisted (survives browser reload)
+const cartStore = new Automat(
+  { items: [] },
+  { addItem(item) { cartStore.setState({ items: [...cartStore.state.items, item] }); } },
+  { name: 'cart', persist: true }
+);
 ```
 
-### 2. Array of Keys
-```jsx
-// Subscribes only to 'count' and 'step':
-this.unsubscribe = myAutomat.subscribe(this, ['count', 'step']);
+---
+
+### `automat.state` / `automat.getState()`
+
+Returns the current state snapshot.
+
+```js
+const current = automat.state;
+// or
+const current = automat.getState();
 ```
 
-### 3. Custom Selector Function
-```jsx
-// Computes a derived slice; returning null/undefined skips updates:
-this.unsubscribe = myAutomat.subscribe(this, (state) => ({
-  count: state.count,
-  isEven: state.count % 2 === 0,
-}));
+---
+
+### `automat.setState(partial)`
+
+Shallow-merges `partial` into current state and synchronously notifies subscribers. Returns the updated state.
+
+```js
+automat.setState({ count: 5 });
 ```
 
-### 4. Automat Slicing with `.select()`
-```jsx
+---
+
+### `automat.actions`
+
+Provides direct access to the actions object supplied in the constructor.
+
+```js
+automat.actions.reset();
+```
+
+---
+
+### `automat.subscribe(target, selector?)`
+
+Subscribes a React `PureComponent` instance (`this`) or a callback function. Returns an unsubscribe function.
+
+```ts
+subscribe(
+  target: PureComponent | ((state: T) => void),
+  selector?: string | string[] | ((state: T) => object | null)
+): () => void
+```
+
+#### Selector forms:
+
+- **Single Key (string)**:
+  ```js
+  // Injects { count } into component setState only when count changes
+  this.unsubscribe = myAutomat.subscribe(this, 'count');
+  ```
+- **Multiple Keys (array)**:
+  ```js
+  // Injects { count, text } only when either property changes
+  this.unsubscribe = myAutomat.subscribe(this, ['count', 'text']);
+  ```
+- **Selector Function**:
+  ```js
+  // Custom slice with shallow equality check; return null/undefined to skip update
+  this.unsubscribe = myAutomat.subscribe(this, (state) => ({
+    badgeCount: state.items.length,
+  }));
+  ```
+- **Callback Function (non-React)**:
+  ```js
+  const unsub = myAutomat.subscribe((state) => console.log('State changed:', state));
+  ```
+
+---
+
+### `automat.select(selector)`
+
+Creates a scoped slice containing a `.state` getter and a pre-scoped `.subscribe()` helper.
+
+```js
 const countSlice = myAutomat.select('count');
-this.state = countSlice.state;          // { count: 0 }
+
+// In constructor:
+this.state = countSlice.state; // { count: 0 }
+
+// In componentDidMount:
 this.unsubscribe = countSlice.subscribe(this);
 ```
 
 ---
 
-## Notification Cascade (Wired Example)
+### `automat.unsubscribe(target)`
 
-### How `subscribeTo()` Works (Reactive Pipeline)
-
-`subscribeTo()` establishes a **reactive pipeline between two automats** without React components in the middle. Think of it like a database trigger or spreadsheet formula: when the upstream changes, the downstream automatically derives new state.
-
-```
-┌─────────────────┐      setState()      ┌─────────────────────────┐
-│  counterAutomat │ ───────────────────> │ notificationAutomat     │
-│  (Upstream)     │                      │ (Downstream)            │
-└─────────────────┘                      └────────────┬────────────┘
-                                                      │ notifies
-                                                      ▼
-                                         ┌─────────────────────────┐
-                                         │ NotificationBar         │
-                                         │ (PureComponent UI)      │
-                                         └─────────────────────────┘
-```
-
-#### Code Anatomy:
+Unregisters a subscriber. Prefer calling the function returned by `subscribe()`.
 
 ```js
-// 1. Upstream automat (e.g. holds raw counter)
-const counterAutomat = new Automat({ count: 0 }, {
-  increment(step = 1) {
-    counterAutomat.setState({ count: counterAutomat.state.count + step });
-  },
-});
-
-// 2. Downstream automat (e.g. maintains an event/audit log)
-const notificationAutomat = new Automat(
-  { messages: [] },
-  {
-    clear() { notificationAutomat.setState({ messages: [] }); },
-  }
-);
-
-// 3. Connect downstream to upstream (returns null to filter, or state object):
-notificationAutomat.subscribeTo(
-  counterAutomat,
-  (upstream, my) =>
-    upstream.count === 0
-      ? null
-      : {
-          messages: [
-            {
-              id: Date.now(),
-              text: `Counter changed to ${upstream.count}`,
-              time: new Date().toLocaleTimeString(),
-              count: upstream.count,
-            },
-            ...my.messages.slice(0, 9), // Caps list at 10 items
-          ],
-        }
-);
+automat.unsubscribe(this);
 ```
-
-#### Parameter Breakdown:
-
-| Parameter | What it receives | Purpose |
-|---|---|---|
-| `upstreamAutomat` | `counterAutomat` | The automat to watch. Any time it calls `setState()`, the transform runs. |
-| `upstreamState` | `{ count: 42 }` | The **new state snapshot** of the upstream automat. |
-| `myState` | `{ messages: [...] }` | The **current state snapshot** of *this* downstream automat right before updating. Essential for accumulating history, comparing previous values, or merging. |
-| **Return value** | `{ messages: [...] }` | A **partial state object** passed to `this.setState(partial)`. Returning `null` skips the update. |
-
-#### Filtering Updates (Conditional Derivation):
-
-You can selectively ignore upstream events by returning `null`:
-
-```js
-// Only log notifications when count exceeds 10:
-notificationAutomat.subscribeTo(counterAutomat, (upstreamState, myState) => {
-  if (upstreamState.count < 10) {
-    return null; // 💡 Returning null skips setState — no re-renders!
-  }
-  return {
-    messages: [{ id: Date.now(), text: `High value reached: ${upstreamState.count}` }, ...myState.messages],
-  };
-});
-```
-
-#### Multiple Upstream Sources & Chaining:
-
-`subscribeTo()` returns `this`, so an automat can aggregate from multiple independent sources:
-
-```js
-dashboardAutomat
-  .subscribeTo(userAutomat, (user) => ({ username: user.name }))
-  .subscribeTo(cartAutomat, (cart) => ({ cartItemCount: cart.items.length }));
-```
-
-#### Teardown:
-
-Calling `notificationAutomat.dispose()` unsubscribes all upstream listeners automatically to prevent memory leaks when an automat is torn down.
-
-
-### Wiring the Cascade in UI:
-
-```jsx
-// 4. Controller component: buttons trigger the UPSTREAM automat
-class CascadeControls extends PureComponent {
-  handleTrigger = (step) => {
-    // 💡 CLICK WIRED HERE:
-    // Calling counterAutomat triggers notificationAutomat downstream!
-    counterAutomat.actions.increment(step);
-  };
-
-  handleClear = () => {
-    notificationAutomat.actions.clear();
-  };
-
-  render() {
-    return (
-      <div>
-        <button onClick={() => this.handleTrigger(1)}>Trigger (+1)</button>
-        <button onClick={() => this.handleTrigger(5)}>Trigger (+5)</button>
-        <button onClick={this.handleClear}>Clear Stream</button>
-      </div>
-    );
-  }
-}
-
-// 5. Downstream component: automatically receives derived cascade messages
-class NotificationBar extends PureComponent {
-  constructor(props) {
-    super(props);
-    this.state = {
-      messages: notificationAutomat.state.messages, // ← from cascade
-      filter: 'all',                                // ← component-local
-    };
-  }
-
-  componentDidMount() {
-    this.unsub = notificationAutomat.subscribe(this);
-  }
-
-  componentWillUnmount() {
-    this.unsub();
-  }
-
-  render() {
-    const { messages } = this.state;
-    return (
-      <ul>
-        {messages.map((m) => (
-          <li key={m.id}>{m.text} ({m.time})</li>
-        ))}
-      </ul>
-    );
-  }
-}
-```
-
-When `counterAutomat.setState()` fires → `transform` runs → `notificationAutomat.setState()` fires → `NotificationBar` automatically re-renders.
 
 ---
 
-## API-Backed Auto-Sync Counter (POST)
+### `automat.subscribeTo(upstreamAutomat, transform)`
 
-An automat can perform optimistic state updates immediately for instant UI feedback, while automatically synchronizing mutations to the backend via HTTP POST in the background:
+Derives state reactively from an upstream automat. Whenever `upstreamAutomat` updates, `transform(upstreamState, myState)` runs. Return partial state to update, or `null` / `undefined` to skip. Returns `this` for chaining.
 
 ```js
-// syncCounterAutomat.js
-const syncCounterAutomat = new Automat(
-  {
-    index: 0,
-    count: 0,
-    syncStatus: 'synced', // 'syncing' | 'synced' | 'error'
-    lastSyncedAt: null,
-  },
-  {
-    async increment(step = 1) {
-      const { index, count } = syncCounterAutomat.state;
-      const nextCount = count + step;
+const auditAutomat = new Automat({ logs: [] });
 
-      // 1. Optimistic update (UI updates immediately):
-      syncCounterAutomat.setState({ count: nextCount, syncStatus: 'syncing' });
-
-      // 2. Automatic background sync via POST /api/counter:
-      try {
-        const res = await fetch('/api/counter', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ index, count: nextCount }),
-        });
-        const data = await res.json();
-        syncCounterAutomat.setState({ syncStatus: 'synced', lastSyncedAt: data.savedAt });
-      } catch (err) {
-        syncCounterAutomat.setState({ syncStatus: 'error', error: err.message });
-      }
-    },
-  }
-);
+auditAutomat.subscribeTo(counterAutomat, (upstream, my) => {
+  if (upstream.count === 0) return null; // skip update
+  return {
+    logs: [`Count changed to ${upstream.count}`, ...my.logs.slice(0, 19)],
+  };
+});
 ```
 
-### Component Wiring:
+---
+
+### `automat.ready`
+
+A promise resolving with current state when initial rehydration finishes (resolves immediately for non-persisted and window-persisted instances; resolves once IndexedDB data loads).
+
+```js
+await cartStore.ready;
+console.log('Cart rehydrated:', cartStore.state);
+```
+
+---
+
+### `automat.clearPersistence()`
+
+Deletes the persisted state entry from `window` or `IndexedDB`.
+
+```js
+await cartStore.clearPersistence();
+```
+
+---
+
+### `Automat.get(name)`
+
+Static registry method to retrieve any named `Automat` instance stored in the `window` object.
+
+```js
+const filterStore = Automat.get('filter');
+```
+
+---
+
+### `automat.dispose()`
+
+Tears down all upstream subscriptions set up via `subscribeTo()`, clears all subscribers, and removes named instance registrations from the window registry.
+
+```js
+automat.dispose();
+```
+
+---
+
+## Examples: Named Automats & Persistence
+
+### 1. Named Automat in Window Object (`persist: false`)
+
+Useful for shared app settings, tab management, or devtools inspection. State persists in memory across component unmounts and Hot Module Replacement (HMR) reloads:
+
+```js
+// settingsAutomat.js
+import { Automat } from 'automat';
+
+export const settingsAutomat = new Automat(
+  { theme: 'dark', soundEnabled: true },
+  {
+    setTheme(theme) {
+      settingsAutomat.setState({ theme });
+    },
+    toggleSound() {
+      settingsAutomat.setState({ soundEnabled: !settingsAutomat.state.soundEnabled });
+    },
+  },
+  { name: 'settings', persist: false } // Saved in window object
+);
+
+// Any other file or devtools console can lookup the instance by name:
+const settings = Automat.get('settings');
+settings?.actions.setTheme('light');
+```
+
+---
+
+### 2. Reload-Resilient Persistence with IndexedDB (`persist: true`)
+
+Useful for shopping carts, drafts, and user form progress that must survive full page refreshes and browser restarts:
+
+```js
+// cartAutomat.js
+import { Automat } from 'automat';
+
+export const cartAutomat = new Automat(
+  { items: [], lastUpdated: null },
+  {
+    addItem(item) {
+      cartAutomat.setState({
+        items: [...cartAutomat.state.items, item],
+        lastUpdated: Date.now(),
+      });
+    },
+    clearCart() {
+      cartAutomat.setState({ items: [], lastUpdated: null });
+      // Optional: wipe stored record from IndexedDB
+      cartAutomat.clearPersistence();
+    },
+  },
+  { name: 'cart', persist: true } // Automatically syncs with IndexedDB
+);
+
+// Optional: wait for saved data to finish hydrating before proceeding
+await cartAutomat.ready;
+console.log('Hydrated cart items from IndexedDB:', cartAutomat.state.items);
+```
+
+---
+
+### 3. PureComponent Consuming an IndexedDB-Persisted Automat
+
+Components mount immediately with initial state. When IndexedDB finishes loading persisted data in the background, subscribers are notified automatically:
 
 ```jsx
-class SyncCounterControls extends PureComponent {
-  state = syncCounterAutomat.state;
+// CartView.jsx
+import { PureComponent } from 'react';
+import { cartAutomat } from './cartAutomat.js';
+
+export class CartView extends PureComponent {
+  constructor(props) {
+    super(props);
+    // 1. Mount immediately with current/initial state
+    this.state = cartAutomat.state;
+  }
 
   componentDidMount() {
-    this.unsubscribe = syncCounterAutomat.subscribe(this);
+    // 2. Subscribe — receives automatic update once IndexedDB hydrates
+    this.unsubscribe = cartAutomat.subscribe(this);
   }
 
   componentWillUnmount() {
+    // 3. Clean up subscription
     this.unsubscribe();
   }
 
   render() {
-    const { index, count, syncStatus, lastSyncedAt } = this.state;
+    const { items } = this.state;
     return (
       <div>
-        <h3>Counter #{index}: {count}</h3>
-        <button onClick={() => syncCounterAutomat.actions.increment(1)}>+1</button>
-        <span>Status: {syncStatus === 'syncing' ? 'POST in flight…' : `Synced (${lastSyncedAt})`}</span>
+        <h3>Shopping Cart ({items.length} items)</h3>
+        <ul>
+          {items.map((item) => (
+            <li key={item.id}>{item.name} - ${item.price}</li>
+          ))}
+        </ul>
+        <button onClick={() => cartAutomat.actions.addItem({ id: Date.now(), name: 'New Item', price: 20 })}>
+          Add Item (Persists on Reload)
+        </button>
       </div>
     );
   }
@@ -493,45 +365,17 @@ class SyncCounterControls extends PureComponent {
 
 ---
 
-## Building the Standalone Library
+## Best Practices
 
-```bash
-npm run build:lib
-```
+### ✅ DO
+- Define `Automat` instances in module scope.
+- Read `automat.state` directly in `constructor(props)`.
+- Subscribe in `componentDidMount()` and unsubscribe in `componentWillUnmount()`.
+- Use selectors (`'key'`, `['keys']`, or function) on multi-field automats to avoid unnecessary re-renders.
+- Return `null` in `subscribeTo` transforms when an update should be skipped.
 
-Produces minified, zero-dependency bundles in `dist/`:
-- `dist/automat.es.js` (~1.14 kB raw / **545 B** gzipped)
-- `dist/automat.umd.js` (~1.09 kB raw / **552 B** gzipped)
-
----
-
-## Project Structure
-
-```
-src/
-├── lib/
-│   ├── Automat.js                  ← core observable state class
-│   └── index.js                    ← public re-exports
-│
-└── examples/
-    ├── automats/
-    │   ├── counterAutomat.js       ← local memory automat
-    │   ├── notificationAutomat.js  ← subscribes to counter (cascade)
-    │   ├── syncCounterAutomat.js   ← API-backed auto-sync indexed counter (POST)
-    │   └── indexAutomat.js         ← shared index + dynamic window.automats Map
-    └── components/
-        ├── CounterButton.jsx       ← PureComponent with direct constructor & subscribe
-        ├── CounterDisplay.jsx      ← independent PureComponent synced via counterAutomat
-        ├── CascadeControls.jsx     ← PureComponent driving and demonstrating upstream cascade
-        ├── NotificationBar.jsx     ← independent PureComponent displaying cascade stream
-        ├── SyncCounterControls.jsx ← PureComponent driving auto-sync indexed counter
-        ├── SyncBackendMonitor.jsx  ← PureComponent inspecting backend DB and POST payload
-        ├── IndexSelector.jsx       ← PureComponent driving shared index counter
-        └── DynamicAutomatSubscriber.jsx ← dynamically resubscribes to window.automats by index
-```
-
----
-
-## License
-
-MIT
+### ❌ DON'T
+- Do not instantiate `Automat` inside React component lifecycle or render methods.
+- Do not mutate state directly (`automat.state.count = 1`); use `setState()` or actions.
+- Do not wrap components in React Context providers or HOCs.
+- Do not forget to unsubscribe in `componentWillUnmount()`.

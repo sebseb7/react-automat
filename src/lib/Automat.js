@@ -5,6 +5,11 @@
  * State persists across mounts and unmounts; components always see the latest value
  * when they mount because they read `automat.state` or `automat.getState()` in their constructor.
  *
+ * Optional Persistence:
+ * - `persist: false` (default when `name` is provided): Persists state in `window` object
+ *   (session memory; survives unmounts, dynamic imports, and HMR).
+ * - `persist: true`: Persists state in `IndexedDB` (survives page reloads and browser restarts).
+ *
  * Direct PureComponent usage:
  * ```jsx
  * class CounterDisplay extends PureComponent {
@@ -50,6 +55,80 @@ function shallowEqual(a, b) {
   return true;
 }
 
+const IDB_NAME = 'automat_db';
+const IDB_STORE = 'states';
+let idbPromise = null;
+
+function getIdb() {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  if (!idbPromise) {
+    idbPromise = new Promise((resolve) => {
+      try {
+        const req = indexedDB.open(IDB_NAME, 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(IDB_STORE)) {
+            db.createObjectStore(IDB_STORE);
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+  return idbPromise;
+}
+
+function idbGet(key) {
+  return getIdb().then((db) => {
+    if (!db) return undefined;
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(IDB_STORE, 'readonly');
+        const req = tx.objectStore(IDB_STORE).get(key);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(undefined);
+      } catch {
+        resolve(undefined);
+      }
+    });
+  });
+}
+
+function idbSet(key, value) {
+  return getIdb().then((db) => {
+    if (!db) return;
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).put(value, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      } catch {
+        resolve();
+      }
+    });
+  });
+}
+
+function idbDelete(key) {
+  return getIdb().then((db) => {
+    if (!db) return;
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).delete(key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      } catch {
+        resolve();
+      }
+    });
+  });
+}
+
 export class Automat {
   /** @type {object} */
   #state;
@@ -59,14 +138,106 @@ export class Automat {
   #callbacks;
   /** @type {Array<function>} */
   #upstreamUnsubscribers = [];
+  /** @type {string|null} */
+  #name = null;
+  /** @type {boolean} */
+  #persist = false;
+  /** @type {Promise<object>} */
+  #ready = Promise.resolve();
 
   /**
    * @param {object} initialState  Initial state snapshot.
    * @param {object} [callbacks]   Named action callbacks. Exposed via `.actions`.
+   * @param {object} [options]     Configuration options.
+   * @param {string} [options.name] Identifier for persistence and registry lookup.
+   * @param {boolean} [options.persist] true = IndexedDB (survives reload), false = window object (default).
    */
-  constructor(initialState = {}, callbacks = {}) {
-    this.#state = { ...initialState };
+  constructor(initialState = {}, callbacks = {}, options = {}) {
     this.#callbacks = callbacks;
+    this.#name = options.name ?? null;
+    this.#persist = Boolean(options.persist);
+
+    if (this.#name && typeof window !== 'undefined') {
+      window.__AUTOMATS__ = window.__AUTOMATS__ || new Map();
+      window.__AUTOMATS__.set(this.#name, this);
+    }
+
+    if (this.#name && !this.#persist) {
+      // Window object persistence (session memory, persists across unmounts & HMR)
+      if (typeof window !== 'undefined') {
+        window.__AUTOMAT_STATE__ = window.__AUTOMAT_STATE__ || new Map();
+        if (window.__AUTOMAT_STATE__.has(this.#name)) {
+          this.#state = { ...initialState, ...window.__AUTOMAT_STATE__.get(this.#name) };
+        } else {
+          this.#state = { ...initialState };
+          window.__AUTOMAT_STATE__.set(this.#name, this.#state);
+        }
+      } else {
+        this.#state = { ...initialState };
+      }
+      this.#ready = Promise.resolve(this.#state);
+    } else if (this.#name && this.#persist) {
+      // IndexedDB persistence (survives page reloads)
+      this.#state = { ...initialState };
+      this.#ready = idbGet(this.#name).then((saved) => {
+        if (saved && typeof saved === 'object') {
+          this.setState(saved);
+        }
+        return this.#state;
+      });
+    } else {
+      this.#state = { ...initialState };
+      this.#ready = Promise.resolve(this.#state);
+    }
+  }
+
+  /**
+   * Retrieves an Automat instance registered by name.
+   * @param {string} name
+   * @returns {Automat|undefined}
+   */
+  static get(name) {
+    if (typeof window !== 'undefined' && window.__AUTOMATS__) {
+      return window.__AUTOMATS__.get(name);
+    }
+    return undefined;
+  }
+
+  /**
+   * The registered name of the automat, or null if unnamed.
+   * @returns {string|null}
+   */
+  get name() {
+    return this.#name;
+  }
+
+  /**
+   * Whether this automat is persisted to IndexedDB (true) or window object (false).
+   * @returns {boolean}
+   */
+  get persist() {
+    return this.#persist;
+  }
+
+  /**
+   * Promise resolving when initial state rehydration is complete.
+   * @returns {Promise<object>}
+   */
+  get ready() {
+    return this.#ready;
+  }
+
+  /**
+   * Clears persisted state from window or IndexedDB.
+   * @returns {Promise<void>}
+   */
+  async clearPersistence() {
+    if (!this.#name) return;
+    if (this.#persist) {
+      await idbDelete(this.#name);
+    } else if (typeof window !== 'undefined') {
+      window.__AUTOMAT_STATE__?.delete(this.#name);
+    }
   }
 
   /**
@@ -95,6 +266,13 @@ export class Automat {
    */
   setState(partial) {
     this.#state = { ...this.#state, ...partial };
+    if (this.#name) {
+      if (this.#persist) {
+        idbSet(this.#name, this.#state);
+      } else if (typeof window !== 'undefined') {
+        window.__AUTOMAT_STATE__?.set(this.#name, this.#state);
+      }
+    }
     this.#notify(partial);
     return this.#state;
   }
@@ -268,6 +446,9 @@ export class Automat {
     this.#upstreamUnsubscribers.forEach((fn) => fn());
     this.#upstreamUnsubscribers = [];
     this.#subscribers.clear();
+    if (this.#name && typeof window !== 'undefined' && window.__AUTOMATS__) {
+      window.__AUTOMATS__.delete(this.#name);
+    }
   }
 
   /** @private */

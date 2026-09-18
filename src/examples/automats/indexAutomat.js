@@ -23,25 +23,25 @@ export const indexAutomat = new Automat(
 
 /**
  * Global Map on window holding dynamically instantiated Automats per index.
+ * Linked to window.__AUTOMATS__ for registry discovery.
  */
-if (typeof window !== 'undefined' && !window.automats) {
-  window.automats = new Map();
+if (typeof window !== 'undefined') {
+  window.automats = window.__AUTOMATS__ || (window.__AUTOMATS__ = new Map());
 }
 
 /**
- * Accesses or dynamically instantiates an Automat in window.automats for the given index.
+ * Accesses or dynamically instantiates a named Automat in the window object for the given index.
+ * Demonstrates named automats and window-level persistence: `persist: false`.
  *
  * @param {number} index
  * @returns {Automat}
  */
 export function getOrCreateSlotAutomat(index) {
-  const map = typeof window !== 'undefined' ? window.automats : null;
-  if (!map) {
-    return new Automat({ index, clicks: 0, notes: `Slot #${index}` });
-  }
+  const name = `slot_${index}`;
+  let slotAutomat = Automat.get(name);
 
-  if (!map.has(index)) {
-    const slotAutomat = new Automat(
+  if (!slotAutomat) {
+    slotAutomat = new Automat(
       {
         index,
         clicks: 0,
@@ -67,10 +67,13 @@ export function getOrCreateSlotAutomat(index) {
             lastModified: new Date().toLocaleTimeString(),
           });
         },
-      }
+      },
+      { name, persist: false } // Named automat persisted to window object
     );
-    map.set(index, slotAutomat);
+    if (typeof window !== 'undefined' && window.automats) {
+      window.automats.set(index, slotAutomat);
+    }
   }
 
-  return map.get(index);
+  return slotAutomat;
 }

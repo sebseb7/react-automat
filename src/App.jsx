@@ -7,6 +7,8 @@ import SyncCounterControls from './examples/components/SyncCounterControls.jsx';
 import SyncBackendMonitor from './examples/components/SyncBackendMonitor.jsx';
 import IndexSelector from './examples/components/IndexSelector.jsx';
 import DynamicAutomatSubscriber from './examples/components/DynamicAutomatSubscriber.jsx';
+import CartManager from './examples/components/CartManager.jsx';
+import CartBadgeDisplay from './examples/components/CartBadgeDisplay.jsx';
 
 class App extends PureComponent {
   render() {
@@ -23,7 +25,7 @@ class App extends PureComponent {
             Observable state management for React{' '}
             <code className="inline-code">PureComponent</code>
             <br />
-            State lives independently of mounting — zero prop drilling.
+            State lives independently of mounting — zero prop drilling · Optional Window and IndexedDB persistence.
           </p>
         </header>
 
@@ -169,11 +171,58 @@ class App extends PureComponent {
                 <span className="flow-arrow">→</span>
                 <span className="flow-node flow-node-component">Recall State for Slot #N</span>
               </div>
+
+              <div className="info-box">
+                <div className="info-box-title">
+                  <span>💾</span> Built-in Persistence: <code>persist: false</code> (Window) &amp; <code>persist: true</code> (IndexedDB)
+                </div>
+                <ul>
+                  <li>
+                    <strong>Window Object (<code>persist: false</code>):</strong> When an automat is configured with <code>name</code>, it registers in the <code>window</code> object. Its state persists across component unmounts and HMR reloads. Global lookup is available via <code>Automat.get(name)</code>.
+                  </li>
+                  <li>
+                    <strong>IndexedDB (<code>persist: true</code>):</strong> Setting <code>persist: true</code> automatically synchronizes state snapshots to IndexedDB under the automat's <code>name</code>, surviving full page reloads and browser restarts.
+                  </li>
+                </ul>
+              </div>
             </div>
 
             <div className="two-columns">
               <IndexSelector />
               <DynamicAutomatSubscriber />
+            </div>
+          </section>
+
+          <div className="section-divider" />
+
+          {/* ── Example 5: Partial State Subscription ────────────── */}
+          <section className="example-section" aria-labelledby="ex5-title">
+            <div className="section-header">
+              <div className="section-title-row">
+                <span className="section-number">05</span>
+                <h2 id="ex5-title">Partial State Subscription (Cart Length vs Content)</h2>
+              </div>
+              <p>
+                A subscriber can subscribe to only part of an automat’s state. The <code className="inline-code">CartBadgeDisplay</code> on
+                the right subscribes <strong>only to list length</strong> (<code className="inline-code">items.length</code>) using a slice selector.
+                Modifying item quantities, changing names, or typing coupon codes mutates <code className="inline-code">cartAutomat</code> state,
+                but because the list length is unchanged, <code className="inline-code">Automat</code>’s internal shallow equality check skips <code className="inline-code">setState()</code> — producing <strong>zero badge re-renders</strong>.
+                With <code className="inline-code">{`{ name: 'cart', persist: true }`}</code>, this cart state also automatically survives full page reloads via IndexedDB.
+              </p>
+              <div className="flow-diagram" aria-label="Partial subscription data flow">
+                <span className="flow-node">cartAutomat.setState()</span>
+                <span className="flow-arrow">→</span>
+                <span className="flow-node">selector(state)</span>
+                <span className="flow-arrow">→</span>
+                <span className="flow-node">shallowEqual(last, next)</span>
+                <span className="flow-arrow">→</span>
+                <span className="flow-node flow-node-component">Render ONLY on Length Change</span>
+              </div>
+            </div>
+
+            <div className="two-columns">
+              <CartManager />
+              <CartBadgeDisplay />
             </div>
           </section>
         </main>
