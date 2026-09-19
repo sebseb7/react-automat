@@ -2,11 +2,14 @@
 
 > Zero-dependency higher-order state container for React `PureComponent`. State lives in module scope (independent of mounting). Components read state synchronously in `constructor` and subscribe in `componentDidMount`. No Context, hooks, or HOCs.
 
+[![npm version](https://img.shields.io/npm/v/react-automat?style=flat-square&color=crimson)](https://www.npmjs.com/package/react-automat)
+[![bundle size](https://img.shields.io/bundlephobia/minzip/react-automat?style=flat-square&color=22c55e&label=minzipped)](https://bundlephobia.com/package/react-automat)
 [![Live Interactive Demo](https://img.shields.io/badge/Live%20Demo-sebgreen.net%2Fautomat-6366f1?style=flat-square)](https://sebgreen.net/automat/)
 [![License: 0BSD](https://img.shields.io/badge/License-0BSD-blue.svg?style=flat-square)](LICENSE)
 
 ```bash
 npm install react-automat
+# or: pnpm add react-automat | yarn add react-automat | bun add react-automat
 ```
 
 ---
