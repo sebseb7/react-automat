@@ -12,6 +12,7 @@ import CartBadgeDisplay from './examples/components/CartBadgeDisplay.jsx';
 import UnconnectedPartialSubscriber from './examples/components/UnconnectedPartialSubscriber.jsx';
 import ApiBoundExample from './examples/components/ApiBoundExample.jsx';
 import CascadingPhotosExample from './examples/components/CascadingPhotosExample.jsx';
+import CombinedAutomatExample from './examples/components/CombinedAutomatExample.jsx';
 
 class App extends PureComponent {
   render() {
@@ -297,6 +298,33 @@ class App extends PureComponent {
             </div>
 
             <CascadingPhotosExample />
+          </section>
+
+          <div className="section-divider" />
+
+          {/* ── Example 8: Combined Automats ──────────────────── */}
+          <section className="example-section" aria-labelledby="ex8-title">
+            <div className="section-header">
+              <div className="section-title-row">
+                <span className="section-number">08</span>
+                <h2 id="ex8-title">Combined Automats</h2>
+              </div>
+              <p>
+                <code className="inline-code">Automat.combine()</code> creates one derived application state from independent automats.
+                Updates retain their namespace, actions remain grouped by child, and readiness operations cover every child.
+              </p>
+              <div className="flow-diagram" aria-label="Combined automat flow">
+                <span className="flow-node">authAutomat</span>
+                <span className="flow-sep">+</span>
+                <span className="flow-node">companyAutomat</span>
+                <span className="flow-arrow">→</span>
+                <span className="flow-node">Automat.combine()</span>
+                <span className="flow-arrow">→</span>
+                <span className="flow-node flow-node-component">appAutomat</span>
+              </div>
+            </div>
+
+            <CombinedAutomatExample />
           </section>
         </main>
       </div>

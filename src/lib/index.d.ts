@@ -32,6 +32,14 @@ export interface SSEOptions<T = any, A = any> {
   onError?: (err: any, automat: Automat<T, A>) => void;
 }
 
+export type CombinedState<M extends Record<string, Automat<any, any>>> = {
+  [K in keyof M]: M[K] extends Automat<infer T, any> ? T : never;
+};
+
+export type CombinedActions<M extends Record<string, Automat<any, any>>> = {
+  [K in keyof M]: M[K] extends Automat<any, infer A> ? A : never;
+};
+
 export class Automat<T = any, A = Record<string, Function>> {
   constructor(initialState?: T | null, actions?: A, options?: AutomatOptions<T>);
 
@@ -78,6 +86,9 @@ export class Automat<T = any, A = Record<string, Function>> {
   dispose(): void;
 
   static get<T = any, A = any>(name: string): Automat<T, A> | undefined;
+  static combine<M extends Record<string, Automat<any, any>>>(
+    automats: M
+  ): Automat<CombinedState<M>, CombinedActions<M>>;
 }
 
 export function fetchJson<T = any>(url: string, options?: RequestInit): Promise<T>;

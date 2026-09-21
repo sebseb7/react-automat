@@ -225,6 +225,18 @@ export class Automat {
     return getGlobalMap('__AUTOMATS__')?.get(name);
   }
 
+  /**
+   * Combines multiple automats into one derived automat.
+   * The combined state and actions use the same keys as the supplied map.
+   * Child updates are forwarded without taking ownership of the children.
+   *
+   * @param {Record<string, Automat>} automats
+   * @returns {Automat}
+   */
+  static combine(automats) {
+    return new CombinedAutomat(automats);
+  }
+
   get name() {
     return this._name;
   }
@@ -427,5 +439,94 @@ export class Automat {
     for (const notifyFn of this._subs.values()) {
       notifyFn(this._state, partial);
     }
+  }
+}
+
+/**
+ * Derived aggregate returned by Automat.combine().
+ * Disposing it removes aggregate subscriptions but leaves its children alive.
+ */
+class CombinedAutomat extends Automat {
+  constructor(automats) {
+    if (!automats || typeof automats !== 'object' || Array.isArray(automats)) {
+      throw new TypeError('Automat.combine expects an object of Automat instances.');
+    }
+
+    const entries = Object.entries(automats);
+    for (const [key, automat] of entries) {
+      if (!automat || typeof automat.subscribe !== 'function') {
+        throw new TypeError(`Automat.combine: "${key}" is not an Automat instance.`);
+      }
+    }
+
+    super(
+      Object.fromEntries(entries.map(([key, automat]) => [key, automat.state])),
+      Object.fromEntries(entries.map(([key, automat]) => [key, automat.actions]))
+    );
+
+    this._children = automats;
+
+    for (const [key, automat] of entries) {
+      this._unsubs.push(
+        automat.subscribe((state) => this.setState({ [key]: state })),
+        automat.onDirty(() => {
+          for (const fn of this._dirtySubs) {
+            try {
+              fn(this);
+            } catch {}
+          }
+        })
+      );
+    }
+  }
+
+  get isReady() {
+    return Object.values(this._children).every((automat) => automat.isReady);
+  }
+
+  get isDirty() {
+    return Object.values(this._children).some((automat) => automat.isDirty);
+  }
+
+  get error() {
+    return Object.values(this._children).find((automat) => automat.error)?.error ?? null;
+  }
+
+  get ready() {
+    return Promise.all(Object.values(this._children).map((automat) => automat.ready)).then(() => {
+      this._syncState();
+      return this._state;
+    });
+  }
+
+  read() {
+    this._state = Object.fromEntries(
+      Object.entries(this._children).map(([key, automat]) => [key, automat.read()])
+    );
+    return this._state;
+  }
+
+  setDirty() {
+    return Promise.all(Object.values(this._children).map((automat) => automat.setDirty())).then(() => {
+      this._syncState();
+      return this._state;
+    });
+  }
+
+  reload() {
+    return Promise.all(Object.values(this._children).map((automat) => automat.reload())).then(() => {
+      this._syncState();
+      return this._state;
+    });
+  }
+
+  refresh() {
+    return this.reload();
+  }
+
+  _syncState() {
+    this._state = Object.fromEntries(
+      Object.entries(this._children).map(([key, automat]) => [key, automat.state])
+    );
   }
 }

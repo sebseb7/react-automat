@@ -82,6 +82,7 @@ export class Automat<T = any, A = Record<string, Function>> {
   dispose(): void;          // Unsubs all, revokes blobs, deletes from window registry
 
   static get<T = any, A = any>(name: string): Automat<T, A> | undefined;
+  static combine<M extends Record<string, Automat<any, any>>>(automats: M): Automat<CombinedState<M>, CombinedActions<M>>;
 }
 
 // Fetchers & SSE
@@ -159,6 +160,30 @@ const live = new Automat({}, {
 });
 connectSSE(live, '/api/stream');
 ```
+
+### G. Combine Automats
+```js
+const app = Automat.combine({
+  auth: authAutomat,
+  company: companyAutomat,
+});
+
+app.state.auth;                    // authAutomat.state
+app.state.company;                 // companyAutomat.state
+app.actions.auth.login();          // authAutomat.actions.login()
+app.actions.company.rename('Acme');
+
+// Notified when either child changes; selectors can isolate a branch.
+const unsubscribe = app.subscribe(this, (state) => ({
+  user: state.auth.user,
+  companyName: state.company.name,
+}));
+```
+
+The aggregate is derived: child updates automatically update the matching key. Its
+`isReady`, `isDirty`, `ready`, `read()`, `setDirty()`, and `reload()` operations cover
+all children. Calling `app.dispose()` only removes aggregate subscriptions; it does
+not dispose the child automats.
 
 ## 3. Decision Matrix: `setDirty()` vs `reload()`
 
