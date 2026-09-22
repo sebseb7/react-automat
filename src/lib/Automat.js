@@ -144,6 +144,8 @@ export class Automat {
   #persist = false;
   /** @type {Promise<object>} */
   #ready = Promise.resolve();
+  /** @type {function|null} */
+  #loader = null;
 
   /**
    * @param {object} initialState  Initial state snapshot.
@@ -151,11 +153,13 @@ export class Automat {
    * @param {object} [options]     Configuration options.
    * @param {string} [options.name] Identifier for persistence and registry lookup.
    * @param {boolean} [options.persist] true = IndexedDB (survives reload), false = window object (default).
+   * @param {function} [options.loader] Async loader function (automat) => Promise<object>.
    */
   constructor(initialState = {}, callbacks = {}, options = {}) {
     this.#callbacks = callbacks;
     this.#name = options.name ?? null;
     this.#persist = Boolean(options.persist);
+    this.#loader = typeof options.loader === 'function' ? options.loader : null;
 
     if (this.#name && typeof window !== 'undefined') {
       window.__AUTOMATS__ = window.__AUTOMATS__ || new Map();
@@ -201,6 +205,88 @@ export class Automat {
       return window.__AUTOMATS__.get(name);
     }
     return undefined;
+  }
+
+  /**
+   * Creates a combined Automat derived from multiple upstream Automats.
+   *
+   * When accessed via `.getData()`:
+   * - If all upstream automats are already resolved (`status === 'success'`),
+   *   it immediately returns the combined state in the constructor (instant resolution).
+   * - If any upstream automat is idle, it triggers `.getData()` on them concurrently,
+   *   transitions itself to pending, and synchronizes automatically as each completes.
+   *
+   * @param {Automat[]} upstreamAutomats  Array of upstream Automat instances.
+   * @param {function(...states: object[]): object} combiner  Function that maps upstream states to combined state.
+   * @param {object} [options]  Optional Automat options (name, persist).
+   * @returns {Automat}
+   */
+  static combine(upstreamAutomats, combiner, options = {}) {
+    const computeInitial = () => {
+      const upstreamStates = upstreamAutomats.map((a) => a.state);
+      return combiner(...upstreamStates);
+    };
+
+    const combined = new Automat(
+      computeInitial(),
+      {
+        getData(opts = {}) {
+          const allResolved = upstreamAutomats.every(
+            (a) => a.state?.status === 'success'
+          );
+
+          if (allResolved && !opts.reload) {
+            const currentCombined = combiner(...upstreamAutomats.map((a) => a.state));
+            if (combined.state.status !== 'success') {
+              combined.setState({ ...currentCombined, status: 'success' });
+            }
+            return combined.state;
+          }
+
+          // Trigger loading on any uncompleted or reload-requested upstreams
+          upstreamAutomats.forEach((a) => {
+            if (typeof a.getData === 'function' && (a.state?.status === 'idle' || opts.reload)) {
+              a.getData(opts);
+            }
+          });
+
+          const checkAllResolved = upstreamAutomats.every(
+            (a) => a.state?.status === 'success'
+          );
+
+          if (checkAllResolved) {
+            const res = combiner(...upstreamAutomats.map((a) => a.state));
+            combined.setState({ ...res, status: 'success' });
+            return combined.state;
+          }
+
+          const partialCombined = combiner(...upstreamAutomats.map((a) => a.state));
+          combined.setState({ ...partialCombined, status: 'pending' });
+          return combined.state;
+        },
+      },
+      options
+    );
+
+    // Subscribe to all upstreams
+    upstreamAutomats.forEach((upstream) => {
+      combined.subscribeTo(upstream, () => {
+        const upstreamStates = upstreamAutomats.map((a) => a.state);
+        const allDone = upstreamStates.every((s) => s?.status === 'success');
+        const anyError = upstreamStates.find((s) => s?.status === 'error');
+        const combinedSlice = combiner(...upstreamStates);
+
+        if (anyError) {
+          return { ...combinedSlice, status: 'error', error: anyError.error };
+        }
+        if (allDone) {
+          return { ...combinedSlice, status: 'success', error: null };
+        }
+        return { ...combinedSlice, status: 'pending' };
+      });
+    });
+
+    return combined;
   }
 
   /**
@@ -256,6 +342,73 @@ export class Automat {
    */
   getState() {
     return this.#state;
+  }
+
+  /**
+   * Reads state for constructor initialization, optionally triggering an action or loader.
+   *
+   * Lifecycle & Caching Semantics:
+   * 1. If loader or load action is configured and state is 'idle' (or reload is true):
+   *    - Transitions state to { status: 'pending', error: null }.
+   *    - Launches loader asynchronously in the background.
+   *    - Synchronously returns the pending state for the first render.
+   * 2. When the async fetch finishes, automat.setState notifies subscribers, triggering
+   *    a second render with completed data.
+   * 3. When called again from another component or after remounting with data already loaded
+   *    (status === 'success'), returns the resolved state immediately in the constructor.
+   *    No secondary render is needed!
+   *
+   * @param {object} [options]
+   * @param {boolean} [options.reload=false]
+   * @returns {object}
+   */
+  getData(options = {}) {
+    const shouldReload = Boolean(options.reload);
+    const isIdle = !this.#state.status || this.#state.status === 'idle' || shouldReload;
+
+    if (this.#loader && isIdle) {
+      this.setState({ status: 'pending', error: null });
+      Promise.resolve(this.#loader(this))
+        .then((result) => {
+          if (result && typeof result === 'object') {
+            this.setState({ status: 'success', ...result, error: null });
+          } else {
+            this.setState({ status: 'success', error: null });
+          }
+        })
+        .catch((err) => {
+          this.setState({ status: 'error', error: err?.message || String(err) });
+        });
+      return this.#state;
+    }
+
+    if (this.#callbacks?.getData && typeof this.#callbacks.getData === 'function') {
+      return this.#callbacks.getData(options);
+    }
+
+    if (this.#callbacks?.load && typeof this.#callbacks.load === 'function' && isIdle) {
+      this.#callbacks.load(options);
+      return this.#state;
+    }
+
+    return this.#state;
+  }
+
+  /**
+   * Alias for getData(options).
+   * @param {object} [options]
+   * @returns {object}
+   */
+  load(options) {
+    return this.getData(options);
+  }
+
+  /**
+   * Forces a reload via getData({ reload: true }).
+   * @returns {object}
+   */
+  reload() {
+    return this.getData({ reload: true });
   }
 
   /**

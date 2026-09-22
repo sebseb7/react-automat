@@ -9,6 +9,10 @@ import IndexSelector from './examples/components/IndexSelector.jsx';
 import DynamicAutomatSubscriber from './examples/components/DynamicAutomatSubscriber.jsx';
 import CartManager from './examples/components/CartManager.jsx';
 import CartBadgeDisplay from './examples/components/CartBadgeDisplay.jsx';
+import AsyncApiPrimaryView from './examples/components/AsyncApiPrimaryView.jsx';
+import AsyncApiCollapsibleView from './examples/components/AsyncApiCollapsibleView.jsx';
+import MultiApiIndividualControls from './examples/components/MultiApiIndividualControls.jsx';
+import MultiApiCombinedDashboard from './examples/components/MultiApiCombinedDashboard.jsx';
 
 class App extends PureComponent {
   render() {
@@ -223,6 +227,77 @@ class App extends PureComponent {
             <div className="two-columns">
               <CartManager />
               <CartBadgeDisplay />
+            </div>
+          </section>
+
+          <div className="section-divider" />
+
+          {/* ── Example 6: Async Fetch & Constructor Cache ──────── */}
+          <section className="example-section" aria-labelledby="ex6-title">
+            <div className="section-header">
+              <div className="section-title-row">
+                <span className="section-number">06</span>
+                <h2 id="ex6-title">Async API Fetch &amp; Constructor Cache (Instant Re-Mount)</h2>
+              </div>
+              <p>
+                An automat fetching asynchronous data via a simulated delayed API. When the primary component mounts,
+                calling <code className="inline-code">profileAsyncAutomat.getData()</code> in its constructor returns{' '}
+                <code className="inline-code">{`{ status: 'pending' }`}</code>, rendering a loading state (1st render), then re-rendering
+                when the fetch finishes (2nd render). When a second component mounts (or when unmounted and remounted via the collapsible toggle),
+                the data is <strong>already loaded in memory</strong> — the constructor receives the resolved payload synchronously, rendering in{' '}
+                <strong>1 render with zero 2nd render</strong>.
+              </p>
+              <div className="flow-diagram" aria-label="Async fetch and constructor cache flow">
+                <span className="flow-node">Mount 1 Constructor</span>
+                <span className="flow-arrow">→</span>
+                <span className="flow-node">status: 'pending' (Render #1)</span>
+                <span className="flow-arrow">→</span>
+                <span className="flow-node">API Resolves</span>
+                <span className="flow-arrow">→</span>
+                <span className="flow-node flow-node-component">Render #2 (Data)</span>
+                <span className="flow-sep">|</span>
+                <span className="flow-node">Mount 2 (Collapsible)</span>
+                <span className="flow-arrow">→</span>
+                <span className="flow-node flow-node-component">Constructor Has Data (1 Render Only)</span>
+              </div>
+            </div>
+
+            <div className="two-columns">
+              <AsyncApiPrimaryView />
+              <AsyncApiCollapsibleView />
+            </div>
+          </section>
+
+          <div className="section-divider" />
+
+          {/* ── Example 7: Combined Multi-API Automats ────────────── */}
+          <section className="example-section" aria-labelledby="ex7-title">
+            <div className="section-header">
+              <div className="section-title-row">
+                <span className="section-number">07</span>
+                <h2 id="ex7-title">Combined Multi-API Automats (Concurrent Orchestration)</h2>
+              </div>
+              <p>
+                Three automats in an orchestrated graph: two with delayed APIs (<code className="inline-code">userStatsAutomat</code> at ~700ms and{' '}
+                <code className="inline-code">systemMetricsAutomat</code> at ~1300ms), and one combined automat created with{' '}
+                <code className="inline-code">Automat.combine()</code>. When accessed while upstreams are idle, it triggers both to load in parallel,
+                merging results when both finish. However, if both have <strong>already been accessed earlier</strong>, the combined automat resolves{' '}
+                <strong>instantly in the component constructor</strong> with zero delay and a single render.
+              </p>
+              <div className="flow-diagram" aria-label="Combined multi-API flow">
+                <span className="flow-node">combinedDashboardAutomat.getData()</span>
+                <span className="flow-arrow">→</span>
+                <span className="flow-node">Check Upstreams</span>
+                <span className="flow-arrow">→</span>
+                <span className="flow-node">If Idle: Fetch Concurrently (~1300ms parallel)</span>
+                <span className="flow-sep">|</span>
+                <span className="flow-node">If Cached: Instant Constructor Return (1 Render)</span>
+              </div>
+            </div>
+
+            <div className="two-columns">
+              <MultiApiIndividualControls />
+              <MultiApiCombinedDashboard />
             </div>
           </section>
         </main>
