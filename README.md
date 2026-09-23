@@ -287,6 +287,55 @@ photo1.invalidateWith(photoHub);
 // 3. If photo1 is mounted, re-fetches immediately; if unmounted, defers fetch!
 ```
 
+### G. Dynamic / Keyed Entities (`KeyedAutomat`)
+
+For entity collections loaded by ID (e.g. categories, articles, users), `KeyedAutomat` provides per-ID reactive entries, concurrent in-flight deduplication, React Suspense, and fine-grained per-ID subscriptions:
+
+```jsx
+import { KeyedAutomat } from 'react-automat';
+
+const categoryAutomat = new KeyedAutomat(null, {}, {
+  name: 'categories',
+  loader: async (id) => {
+    const res = await fetch(`/api/categories/${id}`);
+    return res.json();
+  },
+});
+
+// 1. Scoped handle for a specific ID:
+const techHandle = categoryAutomat.key('tech');
+
+// 2. React Suspense (auto-triggers load, throws in-flight promise):
+const TechCategory = () => {
+  const category = categoryAutomat.read('tech'); // or techHandle.read()
+  return <h1>{category.name}</h1>;
+};
+
+// 3. PureComponent subscription (O(1) updates, 0 cross-talk between IDs):
+class CategoryView extends PureComponent {
+  constructor(props) {
+    super(props);
+    this.handle = categoryAutomat.key(props.id);
+    this.state = this.handle.state; // { data, loading, loaded, error }
+  }
+  componentDidMount() {
+    this.unsub = this.handle.subscribe(this, (item) => ({
+      data: item.data,
+      loading: item.loading,
+    }));
+    this.handle.load(); // Deduplicated across concurrent mounts
+  }
+  componentWillUnmount() {
+    this.unsub();
+  }
+  render() {
+    const { loading, data } = this.state;
+    if (loading) return <div>Loading category...</div>;
+    return <div>{data?.name}</div>;
+  }
+}
+```
+
 ---
 
 ## 3. Core Invariants

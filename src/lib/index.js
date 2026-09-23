@@ -34,6 +34,7 @@
  * }
  */
 export { Automat } from './Automat.js';
+export { KeyedAutomat, KeyHandle } from './KeyedAutomat.js';
 export {
   fetchJson,
   fetchImageBlob,

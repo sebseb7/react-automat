@@ -26,9 +26,11 @@ export function shallowEqual(a, b) {
   return true;
 }
 
+import { KeyedAutomat } from './KeyedAutomat.js';
+
 // ── Global Window & Registry Aliases ──────────────────────────────
 const W = typeof window !== 'undefined' ? window : null;
-const getGlobalMap = (key) => W && (W[key] ||= new Map());
+export const getGlobalMap = (key) => W && (W[key] ||= new Map());
 
 // ── Unified IndexedDB Storage ─────────────────────────────────────
 const IDB_NAME = 'automat_db';
@@ -106,7 +108,7 @@ function idbDelete(key) {
 }
 
 // ── Selector Normalizer ───────────────────────────────────────────
-function resolveSelector(s, isComponent = false) {
+export function resolveSelector(s, isComponent = false) {
   if (typeof s === 'function') {
     return s;
   }
@@ -302,6 +304,17 @@ export class Automat {
     }
 
     throw new TypeError('Automat.combine expects an array or dictionary object of Automat instances.');
+  }
+
+  /**
+   * Creates a KeyedAutomat instance for dynamic ID-based state.
+   * @param {any} [initialItemState=null]
+   * @param {any} [callbacks={}]
+   * @param {any} [options={}]
+   * @returns {KeyedAutomat}
+   */
+  static keyed(initialItemState = null, callbacks = {}, options = {}) {
+    return new KeyedAutomat(initialItemState, callbacks, options);
   }
 
   get name() {
