@@ -96,7 +96,11 @@ export const connectSSE = (automat, url, options = {}) => {
     if (eventName === 'invalidate' || eventName === 'dirty' || data?.action === 'invalidate') {
       automat.setDirty();
     } else if (eventName === 'reload' || data?.action === 'reload') {
-      automat.reload();
+      if (typeof automat.actions?.reload === 'function') {
+        automat.actions.reload();
+      } else if (typeof automat.reload === 'function') {
+        automat.reload();
+      }
     }
   };
 

@@ -1,6 +1,6 @@
 # ⚙ react-automat
 
-> Zero-dependency higher-order state container for React `PureComponent`. State lives in module scope (independent of mounting). Components read state synchronously in `constructor` and subscribe in `componentDidMount`. No Context, hooks, or HOCs.
+> Zero-dependency higher-order observable state container for React `PureComponent`. State lives in module scope (independent of component mounting). Components read state synchronously in `constructor` and subscribe in `componentDidMount`. No Context, hooks, or HOCs.
 
 [![npm version](https://img.shields.io/npm/v/react-automat?style=flat-square&color=crimson)](https://www.npmjs.com/package/react-automat)
 [![bundle size](https://img.shields.io/bundlephobia/minzip/react-automat?style=flat-square&color=22c55e&label=minzipped)](https://bundlephobia.com/package/react-automat)
@@ -14,6 +14,61 @@ npm install react-automat
 
 ---
 
+## Quick Start
+
+```js
+// counterAutomat.js
+import { Automat } from 'react-automat';
+
+export const counterAutomat = new Automat(
+  { count: 0 },
+  {
+    increment(step = 1) {
+      counterAutomat.setState({ count: counterAutomat.state.count + step });
+    },
+    decrement(step = 1) {
+      counterAutomat.setState({ count: counterAutomat.state.count - step });
+    },
+  }
+);
+```
+
+```jsx
+// Counter.jsx
+import { PureComponent } from 'react';
+import { counterAutomat } from './counterAutomat.js';
+
+export class Counter extends PureComponent {
+  constructor(props) {
+    super(props);
+    // 1. Read state directly in constructor (never stale)
+    this.state = counterAutomat.state;
+  }
+
+  componentDidMount() {
+    // 2. Subscribe component to updates
+    this.unsubscribe = counterAutomat.subscribe(this);
+  }
+
+  componentWillUnmount() {
+    // 3. Clean up on unmount
+    this.unsubscribe();
+  }
+
+  render() {
+    return (
+      <div>
+        <span>{this.state.count}</span>
+        <button onClick={() => counterAutomat.actions.increment()}>+1</button>
+        <button onClick={() => counterAutomat.actions.decrement()}>-1</button>
+      </div>
+    );
+  }
+}
+```
+
+---
+
 ## 1. Complete Type Signatures
 
 ```ts
@@ -22,6 +77,7 @@ import type { PureComponent } from 'react';
 export interface AutomatOptions<T> {
   name?: string | null;      // window.__AUTOMATS__ key & Automat.get(name)
   persist?: boolean;         // false = window (default), true = IndexedDB
+  loader?: (automat: Automat<T, any>) => Promise<Partial<T> | void>;
   url?: string | null;       // Auto-triggers fetcher(url) on init
   fetcher?: (url: string, automat?: Automat<T, any>) => Promise<T>;
 }
@@ -44,6 +100,14 @@ export interface SSEOptions<T = any, A = any> {
   onError?: (err: any, automat: Automat<T, A>) => void;
 }
 
+export type CombinedState<M extends Record<string, Automat<any, any>>> = {
+  [K in keyof M]: M[K] extends Automat<infer T, any> ? T : never;
+};
+
+export type CombinedActions<M extends Record<string, Automat<any, any>>> = {
+  [K in keyof M]: M[K] extends Automat<any, infer A> ? A : never;
+};
+
 export class Automat<T = any, A = Record<string, Function>> {
   constructor(initialState?: T | null, actions?: A, options?: AutomatOptions<T>);
 
@@ -59,6 +123,9 @@ export class Automat<T = any, A = Record<string, Function>> {
   readonly persist: boolean;
   readonly url: string | null;
   readonly subscriberCount: number;
+
+  getData(options?: { reload?: boolean }): T;
+  load(options?: { reload?: boolean }): T;
 
   subscribe(target: PureComponent | ((state: T, partial?: Partial<T>) => void), selector?: Selector<T>): () => void;
   select<S = any>(selector: Selector<T, S>): ScopedSlice<S>;
@@ -82,7 +149,16 @@ export class Automat<T = any, A = Record<string, Function>> {
   dispose(): void;          // Unsubs all, revokes blobs, deletes from window registry
 
   static get<T = any, A = any>(name: string): Automat<T, A> | undefined;
+
+  // Dictionary Combination:
   static combine<M extends Record<string, Automat<any, any>>>(automats: M): Automat<CombinedState<M>, CombinedActions<M>>;
+
+  // Array Combiner Function Combination:
+  static combine<R = any>(
+    upstreamAutomats: Automat<any, any>[],
+    combiner: (...states: any[]) => R,
+    options?: AutomatOptions<R>
+  ): Automat<R, Record<string, Function>>;
 }
 
 // Fetchers & SSE
@@ -93,6 +169,8 @@ export const fetchPdfBlob: typeof fetchBlob;
 export function connectSSE<T, A>(automat: Automat<T, A>, url: string, options?: SSEOptions<T, A>): { eventSource: EventSource | null; close: () => void };
 export function createSSEFetcher(sseUrl: string, baseFetcher?: Function, sseOptions?: SSEOptions): (url: string, automat?: any) => Promise<any>;
 ```
+
+---
 
 ## 2. Canonical Usage Patterns
 
@@ -118,14 +196,65 @@ store.subscribe(this, ['theme', 'locale']);             // Multi key
 store.subscribe(this, (s) => ({ items: s.list.length }));// Projection function
 ```
 
-### C. Unconnected Component via Window (Zero imports of store file)
-```js
-const store = Automat.get('cart'); // or window.__AUTOMATS__?.get('cart')
-this.state = { count: store?.state?.items?.length || 0 };
-this.unsub = store?.subscribe(this, (s) => ({ count: s.items.length }));
+### C. Async Fetch & Constructor Cache (Instant Re-Mount)
+```jsx
+class UserCard extends PureComponent {
+  constructor(props) {
+    super(props);
+    // 💡 Synchronous read in constructor:
+    // If already loaded, returns immediately -> 1 render only!
+    this.state = profileAsyncAutomat.getData();
+  }
+  componentDidMount() {
+    this.unsubscribe = profileAsyncAutomat.subscribe(this);
+  }
+  componentWillUnmount() {
+    this.unsubscribe();
+  }
+  render() {
+    const { status, data } = this.state;
+    if (status === 'pending') return <div className="spinner" />;
+    return <div>{data.name}</div>;
+  }
+}
 ```
 
-### D. Backend API: React Suspense vs Standard
+### D. Multi-API Orchestration (`Automat.combine`)
+```js
+const combinedDashboard = Automat.combine(
+  [userStatsAutomat, systemMetricsAutomat],
+  (stats, metrics) => ({
+    stats: stats.data,
+    metrics: metrics.data,
+  })
+);
+
+class Dashboard extends PureComponent {
+  constructor(props) {
+    super(props);
+    // Instant resolution in constructor if both upstreams loaded earlier:
+    this.state = combinedDashboard.getData();
+  }
+  componentDidMount() {
+    this.unsubscribe = combinedDashboard.subscribe(this);
+  }
+  componentWillUnmount() {
+    this.unsubscribe();
+  }
+  render() {
+    const { status, stats, metrics } = this.state;
+    if (status === 'pending') return <div>Loading dual sources in parallel...</div>;
+    return (
+      <div>
+        <h1>{stats.name}</h1>
+        <div>Cluster: {metrics.clusterHealth}</div>
+      </div>
+    );
+  }
+}
+```
+
+### E. Backend API: React Suspense vs Standard
 ```jsx
 const user = new Automat(null, {}, { url: '/api/user' });
 
@@ -137,64 +266,51 @@ class ProfileStandard extends PureComponent {
   constructor(props) { super(props); this.state = { u: user.state }; }
   componentDidMount() { this.unsub = user.subscribe(this, (u) => ({ u })); }
   componentWillUnmount() { this.unsub(); }
-  render() { return !user.isReady ? <Spinner /> : <div>{this.state.u.name}</div>; }
+  render() {
+    if (!user.isReady) return <div>Loading...</div>;
+    return <div>{this.state.u.name}</div>;
+  }
 }
 ```
 
-### E. Cascading Invalidation, Blobs & Memory Freeing
+### F. Cascading Invalidation & Memory Freeing with Blobs
 ```js
-const all = new Automat(null, {}, { name: 'photos/all', url: '/api/photos' });
-const p1 = new Automat(null, {}, { name: 'photo/1', url: '/api/photos/1', fetcher: fetchImageBlob });
-p1.invalidateWith(all); // p1 cascades setDirty() when all.setDirty() is called
+const photoHub = new Automat(null, {}, { url: '/api/photos' });
+const photo1 = new Automat(null, {}, { url: '/api/photos/1', fetcher: fetchImageBlob });
 
-all.setDirty(); // p1 auto-revokes held Blob URL, resets state=null, defers reload if unmounted
+// Automatically cascades setDirty when hub is dirtied
+photo1.invalidateWith(photoHub);
+
+// When photoHub.setDirty() is triggered:
+// 1. photo1 calls URL.revokeObjectURL(photo1.state.url) to free browser image memory
+// 2. photo1 resets to null/initial state
+// 3. If photo1 is mounted, re-fetches immediately; if unmounted, defers fetch!
 ```
 
-### F. SSE Remote Trigger
-```js
-const live = new Automat({}, {
-  onSSETrigger(data, event, store) {
-    if (event === 'invalidate') store.setDirty();
-    if (event === 'reload') store.reload();
-  }
-});
-connectSSE(live, '/api/stream');
-```
+---
 
-### G. Combine Automats
-```js
-const app = Automat.combine({
-  auth: authAutomat,
-  company: companyAutomat,
-});
+## 3. Core Invariants
 
-app.state.auth;                    // authAutomat.state
-app.state.company;                 // companyAutomat.state
-app.actions.auth.login();          // authAutomat.actions.login()
-app.actions.company.rename('Acme');
+1. **Lifecycle-Independent**: `Automat` instances live outside the React tree (typically in module scope), persisting state across component mounts and unmounts.
+2. **Synchronous Constructor Reads**: Components initialize with `this.state = myAutomat.state;` directly in `constructor(props)`.
+3. **Automatic Shallow Merges**: When subscribed with `subscribe(this)`, `automat.setState(partial)` calls `component.setState(partial)`, preserving any component-local state.
+4. **Fine-Grained Selectors**: Passing a selector to `subscribe(this, selector)` runs shallow equality checks; updates to unrelated fields skip `setState` and avoid re-renders.
+5. **Zero Wrappers**: No hooks, HOCs, Context Providers, or `connect()`.
+6. **Optional Persistence**: Automats can specify a `name` and persist in the `window` object (`persist: false`) for session memory across unmounts/HMR, or in `IndexedDB` (`persist: true`) to survive full page reloads.
 
-// Notified when either child changes; selectors can isolate a branch.
-const unsubscribe = app.subscribe(this, (state) => ({
-  user: state.auth.user,
-  companyName: state.company.name,
-}));
-```
+---
 
-The aggregate is derived: child updates automatically update the matching key. Its
-`isReady`, `isDirty`, `ready`, `read()`, `setDirty()`, and `reload()` operations cover
-all children. Calling `app.dispose()` only removes aggregate subscriptions; it does
-not dispose the child automats.
+## Best Practices
 
-## 3. Decision Matrix: `setDirty()` vs `reload()`
+### ✅ DO
+- Define `Automat` instances in module scope.
+- Read `automat.state` or `automat.getData()` directly in `constructor(props)`.
+- Subscribe in `componentDidMount()` and unsubscribe in `componentWillUnmount()`.
+- Use selectors (`'key'`, `['keys']`, or function) on multi-field automats to avoid unnecessary re-renders.
+- Return `null` in `subscribeTo` transforms when an update should be skipped.
 
-| Method | `isReady` | State during fetch | Suspense | Unmounted | Use Case |
-|---|---|---|---|---|---|
-| `setDirty()` | `false` | Resets to `null`/init | Throws fallback | Deferred until mount/read | Cache bust, logout, hard reset |
-| `reload()` | `true` | Preserved | Never suspends | Immediate fetch | Polling, pull-to-refresh, sync |
-
-## 4. Invariant Rules
-- Read `store.state` synchronously in `constructor(props)` — never in render bodies.
-- Subscribe in `componentDidMount()` & store the returned `unsub`; unsubscribe in `componentWillUnmount()`.
-- Never mutate `store.state` directly (`store.state.x = 1` ❌); use `store.setState({ x })` or actions.
-- Pass selectors to `subscribe(this, selector)` on multi-key stores to skip redundant renders.
-- Never wrap components in Context Providers, HOCs, or custom hooks.
+### ❌ DON'T
+- Do not instantiate `Automat` inside React component lifecycle or render methods.
+- Do not mutate state directly (`automat.state.count = 1`); use `setState()` or actions.
+- Do not wrap components in React Context providers or HOCs.
+- Do not forget to unsubscribe in `componentWillUnmount()`.

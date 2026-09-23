@@ -3,8 +3,7 @@ import type { PureComponent } from 'react';
 export interface AutomatOptions<T = any> {
   name?: string | null;
   persist?: boolean;
-  url?: string | null;
-  fetcher?: (url: string, automat?: Automat<T, any>) => Promise<T>;
+  loader?: (automat: Automat<T, any>) => Promise<T | Partial<T>> | T | Partial<T>;
 }
 
 export type Selector<T, S> =
@@ -41,19 +40,21 @@ export type CombinedActions<M extends Record<string, Automat<any, any>>> = {
 };
 
 export class Automat<T = any, A = Record<string, Function>> {
-  constructor(initialState?: T | null, actions?: A, options?: AutomatOptions<T>);
+  constructor(
+    initialState?: T | null,
+    actions?: A | ((automat: Automat<T, A>) => A),
+    options?: AutomatOptions<T>
+  );
 
   readonly state: T;
   getState(): T;
   setState(partial: Partial<T> | ((prevState: T) => Partial<T>)): T;
 
   readonly actions: A;
-  readonly isReady: boolean;
   readonly isDirty: boolean;
   readonly ready: Promise<T>;
   readonly name: string | null;
   readonly persist: boolean;
-  readonly url: string | null;
   readonly subscriberCount: number;
 
   subscribe(
@@ -77,9 +78,7 @@ export class Automat<T = any, A = Record<string, Function>> {
 
   onDirty(fn: (automat: this) => void): () => void;
 
-  setDirty(): Promise<T>;
-  reload(): Promise<T>;
-  refresh(): Promise<T>;
+  setDirty(keep?: boolean, now?: boolean): Promise<T>;
   read(): T;
 
   clearPersistence(): Promise<void>;
@@ -89,6 +88,11 @@ export class Automat<T = any, A = Record<string, Function>> {
   static combine<M extends Record<string, Automat<any, any>>>(
     automats: M
   ): Automat<CombinedState<M>, CombinedActions<M>>;
+  static combine<R = any>(
+    upstreamAutomats: Automat<any, any>[],
+    combiner: (...states: any[]) => R,
+    options?: AutomatOptions<R>
+  ): Automat<R, Record<string, Function>>;
 }
 
 export function fetchJson<T = any>(url: string, options?: RequestInit): Promise<T>;

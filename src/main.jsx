@@ -20,7 +20,6 @@ if (typeof window !== 'undefined' && typeof EventTarget !== 'undefined') {
     return originalAddEventListener.call(this, type, listener, opts);
   };
 }
-
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import './index.css';

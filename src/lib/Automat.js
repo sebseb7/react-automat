@@ -1,73 +1,131 @@
 /**
  * @module Automat
  *
- * Higher-order state container designed for React PureComponent with optional
- * persistence (Window or IndexedDB) and backend API binding.
+ * Higher-order observable state container for React PureComponents with optional
+ * persistence (Window or IndexedDB), backend API binding, cascading invalidation,
+ * and multi-automat combination.
  */
 
 /**
- * Shallow equality check between two values or objects.
+ * Performs a shallow equality check between two values or objects.
+ * Used by Automat subscribers to avoid unnecessary setState calls when
+ * a subscribed slice of state has not changed.
  */
-function shallowEqual(a, b) {
+export function shallowEqual(a, b) {
   if (Object.is(a, b)) return true;
   if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
-  const kA = Object.keys(a);
-  return kA.length === Object.keys(b).length && kA.every((k) => Object.is(a[k], b[k]));
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (let i = 0; i < keysA.length; i++) {
+    const key = keysA[i];
+    if (!Object.prototype.hasOwnProperty.call(b, key) || !Object.is(a[key], b[key])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // ── Global Window & Registry Aliases ──────────────────────────────
 const W = typeof window !== 'undefined' ? window : null;
 const getGlobalMap = (key) => W && (W[key] ||= new Map());
 
-// ── Unified IndexedDB Runner ──────────────────────────────────────
+// ── Unified IndexedDB Storage ─────────────────────────────────────
 const IDB_NAME = 'automat_db';
 const IDB_STORE = 'states';
 let idbPromise = null;
 
-const getIdb = () =>
-  typeof indexedDB === 'undefined'
-    ? Promise.resolve(null)
-    : (idbPromise ||= new Promise((resolve) => {
-        try {
-          const req = indexedDB.open(IDB_NAME, 1);
-          req.onupgradeneeded = () => {
-            if (!req.result.objectStoreNames.contains(IDB_STORE)) {
-              req.result.createObjectStore(IDB_STORE);
-            }
-          };
-          req.onsuccess = () => resolve(req.result);
-          req.onerror = () => resolve(null);
-        } catch {
-          resolve(null);
-        }
-      }));
+function getIdb() {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  if (!idbPromise) {
+    idbPromise = new Promise((resolve) => {
+      try {
+        const req = indexedDB.open(IDB_NAME, 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(IDB_STORE)) {
+            db.createObjectStore(IDB_STORE);
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+  return idbPromise;
+}
 
-const idbRun = (method, ...args) =>
-  getIdb().then(
-    (db) =>
-      db &&
-      new Promise((resolve) => {
-        try {
-          const req = db
-            .transaction(IDB_STORE, method === 'get' ? 'readonly' : 'readwrite')
-            .objectStore(IDB_STORE)[method](...args);
-          req.onsuccess = req.oncomplete = () => resolve(req.result);
-          req.onerror = () => resolve();
-        } catch {
-          resolve();
-        }
-      })
-  );
+function idbGet(key) {
+  return getIdb().then((db) => {
+    if (!db) return undefined;
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(IDB_STORE, 'readonly');
+        const req = tx.objectStore(IDB_STORE).get(key);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(undefined);
+      } catch {
+        resolve(undefined);
+      }
+    });
+  });
+}
+
+function idbSet(key, value) {
+  return getIdb().then((db) => {
+    if (!db) return;
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).put(value, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      } catch {
+        resolve();
+      }
+    });
+  });
+}
+
+function idbDelete(key) {
+  return getIdb().then((db) => {
+    if (!db) return;
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).delete(key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      } catch {
+        resolve();
+      }
+    });
+  });
+}
 
 // ── Selector Normalizer ───────────────────────────────────────────
-const resolveSelector = (s) =>
-  typeof s === 'function'
-    ? s
-    : Array.isArray(s)
-    ? (x) => x && Object.fromEntries(s.map((k) => [k, x[k]]))
-    : s
-    ? (x) => x && { [s]: x[s] }
-    : (x) => x;
+function resolveSelector(s, isComponent = false) {
+  if (typeof s === 'function') {
+    return s;
+  }
+  if (typeof s === 'string') {
+    return isComponent ? (state) => (state ? { [s]: state[s] } : state) : (state) => state?.[s];
+  }
+  if (Array.isArray(s)) {
+    return (state) => {
+      if (!state) return state;
+      const slice = {};
+      for (let i = 0; i < s.length; i++) {
+        const k = s[i];
+        slice[k] = state[k];
+      }
+      return slice;
+    };
+  }
+  return (state) => state;
+}
 
 export class Automat {
   constructor(initialState = null, callbacks = {}, options = {}) {
@@ -79,69 +137,73 @@ export class Automat {
       : null;
     this._state = this._initial ? { ...this._initial } : null;
 
-    this._cbs = callbacks;
+    const resolvedCallbacks = typeof callbacks === 'function' ? callbacks(this) : (callbacks || {});
+    this._cbs = {};
+    for (const [key, fn] of Object.entries(resolvedCallbacks)) {
+      this._cbs[key] = typeof fn === 'function' ? fn.bind(this) : fn;
+    }
     this._subs = new Map();
     this._dirtySubs = new Set();
     this._unsubs = [];
     this._name = options.name ?? null;
     this._persist = Boolean(options.persist);
-    this._url = options.url ?? null;
-    this._fetcher = options.fetcher || ((url) => fetch(url).then((r) => r.json()));
+    this._loader = options.loader ?? null;
     this._error = null;
 
     if (this._name) {
       getGlobalMap('__AUTOMATS__')?.set(this._name, this);
     }
 
-    this._isReady = !this._url && !(this._name && this._persist);
     this._isDirty = false;
-    this._ready = this._url
-      ? this._fetchData()
-      : this._name && this._persist
-      ? idbRun('get', this._name).then((saved) => {
-          if (saved && typeof saved === 'object') this.setState(saved);
-          this._isReady = true;
-          return this._state;
-        })
-      : Promise.resolve(
-          this._name && !this._persist
-            ? ((this._state = {
-                ...this._state,
-                ...getGlobalMap('__AUTOMAT_STATE__')?.get(this._name),
-              }),
-              getGlobalMap('__AUTOMAT_STATE__')?.set(this._name, this._state),
-              this._state)
-            : this._state
-        );
+
+    if (this._loader) {
+      this._ready = this._fetchLoader();
+    } else if (this._name && this._persist) {
+      this._ready = idbGet(this._name).then((saved) => {
+        if (saved && typeof saved === 'object') {
+          this.setState(saved);
+        }
+        return this._state;
+      });
+    } else if (this._name && !this._persist) {
+      const saved = getGlobalMap('__AUTOMAT_STATE__')?.get(this._name);
+      if (saved && typeof saved === 'object') {
+        this._state = { ...this._state, ...saved };
+      }
+      getGlobalMap('__AUTOMAT_STATE__')?.set(this._name, this._state);
+      this._ready = Promise.resolve(this._state);
+    } else {
+      this._ready = Promise.resolve(this._state);
+    }
   }
 
   /**
-   * Internal data fetcher for backend API binding.
-   * @param {boolean} [silent=false] If true, preserves isReady without unready flash.
+   * Internal data loader for function-backed automats.
    * @private
    */
-  _fetchData(silent = false) {
-    if (!silent) this._isReady = false;
+  _fetchLoader() {
     this._isDirty = false;
     this._error = null;
 
-    const promise = this._fetcher(this._url, this)
+    const promise = Promise.resolve(this._loader(this))
       .then((data) => {
-        this._state = data;
-        this._isReady = true;
+        if (data && typeof data === 'object') {
+          this._state = { ...this._state, ...data };
+        } else if (data !== undefined) {
+          this._state = data;
+        }
         this._isDirty = false;
         this._error = null;
         if (this._name) {
           this._persist
-            ? idbRun('put', this._state, this._name)
+            ? idbSet(this._name, this._state)
             : getGlobalMap('__AUTOMAT_STATE__')?.set(this._name, this._state);
         }
         this._notify(this._state);
         return this._state;
       })
       .catch((err) => {
-        this._error = err;
-        this._isReady = false;
+        this._error = err?.message || String(err);
         this._notify(this._state);
         throw err;
       });
@@ -152,21 +214,26 @@ export class Automat {
 
   /**
    * Marks the automat as dirty and unready.
-   * State resets to initial default or null (if no defaults were given).
-   *
-   * If subscribed anywhere, reloads immediately from backend API.
-   * If not subscribed anywhere, defers reload until read() or subscribe().
+   * State resets to initial default or null.
+   * If subscribed anywhere and configured with a loader, triggers loader fetch immediately.
    */
-  setDirty() {
+  setDirty(keep = false, now = false) {
+    let shouldKeep = Boolean(keep);
+    let shouldNow = Boolean(now);
+    if (typeof keep === 'object' && keep !== null) {
+      shouldKeep = Boolean(keep.keep);
+      shouldNow = Boolean(keep.now);
+    }
     if (typeof this._state?.revoke === 'function') {
       try {
         this._state.revoke();
       } catch {}
     }
     this._isDirty = true;
-    this._isReady = false;
-    this._state = this._initial ? { ...this._initial } : null;
-    this._notify(this._state);
+    if (!shouldKeep) {
+      this._state = this._initial ? { ...this._initial } : null;
+      this._notify(this._state);
+    }
 
     if (this._dirtySubs) {
       for (const fn of this._dirtySubs) {
@@ -176,41 +243,24 @@ export class Automat {
       }
     }
 
-    if (this._subs.size > 0 && this._url) {
-      return this._fetchData();
+    if (this._loader && (shouldNow || this._subs.size > 0)) {
+      return this._fetchLoader();
     }
     return Promise.resolve(this._state);
   }
 
   /**
-   * Reloads data from the backend API without making the automat dirty or unready.
-   * Existing state remains intact and UI stays interactive until fresh data arrives.
-   *
-   * @returns {Promise<any>} Resolves with the fresh state.
-   */
-  reload() {
-    return this._url ? this._fetchData(true) : Promise.resolve(this._state);
-  }
-
-  /**
-   * Alias for reload().
-   */
-  refresh() {
-    return this.reload();
-  }
-
-  /**
    * Reads current state for React Suspense or imperative consumers.
-   * If dirty and unmounted, calling read() triggers deferred reload.
+   * If dirty and unmounted, triggers deferred fetch.
    * If unready, throws the ready promise for React Suspense.
    */
   read() {
-    if (this._url) {
+    if (this._loader) {
       if (this._isDirty) {
-        this._fetchData();
+        this._fetchLoader();
       }
-      if (!this._isReady) {
-        if (this._error) throw this._error;
+      if (this._error) throw this._error;
+      if (this._state === null && this._ready) {
         throw this._ready;
       }
     }
@@ -227,14 +277,31 @@ export class Automat {
 
   /**
    * Combines multiple automats into one derived automat.
-   * The combined state and actions use the same keys as the supplied map.
-   * Child updates are forwarded without taking ownership of the children.
    *
-   * @param {Record<string, Automat>} automats
+   * Supports two signatures:
+   * 1. Array + Combiner function:
+   *    Automat.combine([automatA, automatB], (stateA, stateB) => ({ ... }), options)
+   * 2. Object Dictionary:
+   *    Automat.combine({ auth: authAutomat, company: companyAutomat })
+   *
+   * @param {Automat[] | Record<string, Automat>} upstream
+   * @param {Function} [combiner]
+   * @param {object} [options]
    * @returns {Automat}
    */
-  static combine(automats) {
-    return new CombinedAutomat(automats);
+  static combine(upstream, combiner, options = {}) {
+    if (Array.isArray(upstream)) {
+      if (typeof combiner !== 'function') {
+        throw new TypeError('Automat.combine with array expects a combiner function as second argument.');
+      }
+      return createOrchestratedCombinedAutomat(upstream, combiner, options);
+    }
+
+    if (upstream && typeof upstream === 'object') {
+      return new CombinedAutomat(upstream);
+    }
+
+    throw new TypeError('Automat.combine expects an array or dictionary object of Automat instances.');
   }
 
   get name() {
@@ -245,12 +312,8 @@ export class Automat {
     return this._persist;
   }
 
-  get url() {
-    return this._url;
-  }
-
-  get isReady() {
-    return this._isReady;
+  get isPersisted() {
+    return this._persist;
   }
 
   get isDirty() {
@@ -266,8 +329,8 @@ export class Automat {
   }
 
   get ready() {
-    if (this._url && this._isDirty) {
-      return this._fetchData();
+    if (this._loader && this._isDirty) {
+      return this._fetchLoader();
     }
     return this._ready;
   }
@@ -275,50 +338,73 @@ export class Automat {
   async clearPersistence() {
     if (!this._name) return;
     this._persist
-      ? await idbRun('delete', this._name)
+      ? await idbDelete(this._name)
       : getGlobalMap('__AUTOMAT_STATE__')?.delete(this._name);
   }
 
   get state() {
+    if (this._loader && this._isDirty) {
+      this._fetchLoader();
+    }
     return this._state;
   }
 
   getState() {
-    return this._state;
+    return this.state;
   }
 
+  /**
+   * Shallow-merges `partial` into current state and notifies all subscribers.
+   */
   setState(partial) {
-    this._state = { ...this._state, ...partial };
+    const update = typeof partial === 'function' ? partial(this._state) : partial;
+    this._state = { ...this._state, ...update };
     if (this._name) {
       this._persist
-        ? idbRun('put', this._state, this._name)
+        ? idbSet(this._name, this._state)
         : getGlobalMap('__AUTOMAT_STATE__')?.set(this._name, this._state);
     }
-    this._notify(partial);
+    this._notify(update);
     return this._state;
   }
 
+  /**
+   * Subscribes a React PureComponent instance or a listener callback.
+   * Supports slice subscriptions with string, array, or function selectors.
+   * Uses shallow equality to prevent re-renders when the slice has not changed.
+   *
+   * @param {object|function} target React component (`this`) or callback function.
+   * @param {string|string[]|function} [selector]
+   * @returns {function} Unsubscribe cleanup function.
+   */
   subscribe(target, selector) {
     const isComponent = target && typeof target.setState === 'function';
-    if (!isComponent && typeof target !== 'function') {
-      throw new TypeError('Automat.subscribe expects a component or function.');
+    const isFunction = typeof target === 'function';
+
+    if (!isComponent && !isFunction) {
+      throw new TypeError(
+        'Automat.subscribe expects a callback function or a React component instance with a setState method.'
+      );
     }
 
-    const getSlice = selector ? resolveSelector(selector) : null;
+    const hasSelector = selector !== undefined && selector !== null;
+    const getSlice = hasSelector ? resolveSelector(selector, isComponent) : null;
     let lastSlice = getSlice ? getSlice(this._state) : undefined;
 
     const notifyFn = (state, partial) => {
       if (getSlice) {
         const nextSlice = getSlice(state);
-        if (nextSlice == null && lastSlice == null) return;
+        if (nextSlice == null) return;
         if (shallowEqual(lastSlice, nextSlice)) return;
         lastSlice = nextSlice;
 
         if (isComponent) {
-          if (nextSlice !== null && typeof nextSlice !== 'object') {
-            throw new TypeError('Automat: selector must return an object.');
+          if (typeof nextSlice !== 'object') {
+            throw new TypeError(
+              'Automat: selector for a React component must return a state object, e.g. state => ({ count: state.count }).'
+            );
           }
-          nextSlice ? target.setState(nextSlice) : target.forceUpdate();
+          target.setState(nextSlice);
         } else {
           target(nextSlice);
         }
@@ -336,8 +422,8 @@ export class Automat {
 
     this._subs.set(target, notifyFn);
 
-    if (this._url && this._isDirty) {
-      this._fetchData();
+    if (this._loader && this._isDirty) {
+      this._fetchLoader();
     }
 
     return () => {
@@ -345,12 +431,18 @@ export class Automat {
     };
   }
 
+  /**
+   * Slices this automat to a subset of state for reading and subscription.
+   *
+   * @param {string|string[]|function} selector
+   * @returns {{ readonly state: any, subscribe(target: object|function): function }}
+   */
   select(selector) {
-    const slice = resolveSelector(selector);
+    const getSlice = resolveSelector(selector, false);
     const self = this;
     return {
       get state() {
-        return slice(self._state);
+        return getSlice(self._state);
       },
       subscribe: (target) => self.subscribe(target, selector),
     };
@@ -363,7 +455,7 @@ export class Automat {
   /**
    * Registers a listener called whenever this automat becomes dirty.
    * @param {(automat: Automat) => void} fn
-   * @returns {() => void} Unsubscribe function
+   * @returns {() => void}
    */
   onDirty(fn) {
     this._dirtySubs.add(fn);
@@ -372,7 +464,7 @@ export class Automat {
 
   /**
    * Cascading invalidation: automatically sets this automat dirty whenever
-   * upstreamAutomat is set dirty. If filterFn is provided, only invalidates when it returns true.
+   * upstreamAutomat is set dirty.
    *
    * @param {Automat} upstreamAutomat
    * @param {(upstreamState: any, myState: any) => boolean} [filterFn]
@@ -389,14 +481,13 @@ export class Automat {
   }
 
   /**
-   * Connects this automat to an upstream automat.
-   * Whenever upstream emits new state, transform(upstreamState, myState) runs.
+   * Connects this automat to derive state from an upstream automat.
    *
    * @param {Automat} upstreamAutomat
    * @param {(upstreamState: any, myState: any) => any} transform
    * @param {object} [options]
    * @param {boolean | ((upstreamState: any, myState: any) => boolean)} [options.cascadeDirty]
-   * @returns {this}
+   * @returns {this} Chainable.
    */
   subscribeTo(upstreamAutomat, transform, options = {}) {
     const unsub = upstreamAutomat.subscribe((upstreamState) => {
@@ -443,7 +534,35 @@ export class Automat {
 }
 
 /**
- * Derived aggregate returned by Automat.combine().
+ * Creates an orchestrated combined Automat from an array of upstreams and combiner function.
+ */
+function createOrchestratedCombinedAutomat(upstreamAutomats, combiner, options = {}) {
+  const computeInitial = () => {
+    const upstreamStates = upstreamAutomats.map((a) => a.state);
+    return combiner(...upstreamStates);
+  };
+
+  const combined = new Automat(
+    computeInitial(),
+    {},
+    options
+  );
+
+  // Subscribe to all upstreams
+  upstreamAutomats.forEach((upstream) => {
+    combined.subscribeTo(upstream, () => {
+      const upstreamStates = upstreamAutomats.map((a) => a.state);
+      const combinedSlice = combiner(...upstreamStates);
+      combined.setState(combinedSlice);
+      return combinedSlice;
+    });
+  });
+
+  return combined;
+}
+
+/**
+ * Derived aggregate returned by Automat.combine({ auth: authAutomat, company: companyAutomat }).
  * Disposing it removes aggregate subscriptions but leaves its children alive.
  */
 class CombinedAutomat extends Automat {
@@ -469,7 +588,7 @@ class CombinedAutomat extends Automat {
     for (const [key, automat] of entries) {
       this._unsubs.push(
         automat.subscribe((state) => this.setState({ [key]: state })),
-        automat.onDirty(() => {
+        automat.onDirty?.(() => {
           for (const fn of this._dirtySubs) {
             try {
               fn(this);
@@ -478,10 +597,6 @@ class CombinedAutomat extends Automat {
         })
       );
     }
-  }
-
-  get isReady() {
-    return Object.values(this._children).every((automat) => automat.isReady);
   }
 
   get isDirty() {
@@ -501,27 +616,16 @@ class CombinedAutomat extends Automat {
 
   read() {
     this._state = Object.fromEntries(
-      Object.entries(this._children).map(([key, automat]) => [key, automat.read()])
+      Object.entries(this._children).map(([key, automat]) => [key, automat.read?.() ?? automat.state])
     );
     return this._state;
   }
 
-  setDirty() {
-    return Promise.all(Object.values(this._children).map((automat) => automat.setDirty())).then(() => {
+  setDirty(keep = false, now = false) {
+    return Promise.all(Object.values(this._children).map((automat) => automat.setDirty?.(keep, now))).then(() => {
       this._syncState();
       return this._state;
     });
-  }
-
-  reload() {
-    return Promise.all(Object.values(this._children).map((automat) => automat.reload())).then(() => {
-      this._syncState();
-      return this._state;
-    });
-  }
-
-  refresh() {
-    return this.reload();
   }
 
   _syncState() {

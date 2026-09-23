@@ -1,7 +1,7 @@
 /**
  * @module react-automat
  *
- * Higher-order state container for React PureComponents with optional persistence.
+ * Observable higher-order state container for React PureComponents with optional persistence.
  *
  * @example
  * import { Automat } from './lib/index.js';

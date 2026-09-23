@@ -22,10 +22,11 @@ export const indexAutomat = new Automat(
 );
 
 /**
- * Global Map on window holding dynamically instantiated slot Automats per index.
+ * Global Map on window holding dynamically instantiated Automats per index.
+ * Linked to window.__AUTOMATS__ for registry discovery.
  */
-if (typeof window !== 'undefined' && !window.automats) {
-  window.automats = new Map();
+if (typeof window !== 'undefined') {
+  window.automats = window.__AUTOMATS__ || (window.__AUTOMATS__ = new Map());
 }
 
 /**
